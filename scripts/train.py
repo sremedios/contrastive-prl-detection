@@ -277,7 +277,11 @@ def main(argv=None):
                              n_slices=args.vol_slices, dpi=args.vol_dpi,
                              n_patches=args.vol_patches,
                              patch_size=(side, side, side))
-        print(f"volume probes: {[pr.tag for pr in probes] or '(none)'}")
+        if not probes:
+            print("volume probes: (none)")
+        for pr in probes:
+            counts = {ct.CLASS_NAMES[c]: len(t) for c, t in sorted(pr.patches.items())}
+            print(f"volume probe {pr.tag}: {counts}")
     elif args.wandb and args.vol_every:
         print("--vol-every needs --pos-root and/or --neg-root; skipping volume renders")
 
