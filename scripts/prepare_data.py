@@ -29,8 +29,9 @@ from tqdm.auto import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contrastive_prl_detection.dataset import (get_fpaths, list_subject_ids,
-                                               load_ras, patch_fname)
+from contrastive_prl_detection.dataset import (IncompleteSubject, get_fpaths,
+                                               list_subject_ids, load_ras,
+                                               missing_roles, patch_fname)
 from contrastive_prl_detection.patch_utils import (get_neg_patches,
                                                    get_neu_patches,
                                                    get_pos_patches)
@@ -55,10 +56,38 @@ def parse_args(argv=None):
                    help="fraction of neutral patches drawn from inside the brain mask")
     p.add_argument("--exclude-ids", nargs="*", default=[],
                    help="subject ids to skip entirely")
+    p.add_argument("--on-incomplete", choices=("skip", "fail"), default="skip",
+                   help="what to do with a subject missing an expected volume "
+                        "(default: report it and carry on)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--overwrite", action="store_true",
                    help="re-extract subjects that already have patches on disk")
     return p.parse_args(argv)
+
+
+def preflight(root, subject_ids, pos, args):
+    """Split subjects into usable and incomplete before any volume is loaded.
+
+    A missing volume used to surface as an IndexError partway through the run,
+    after minutes of work, so the check happens up front instead.
+    """
+    ok, bad = [], {}
+    for subj_id in subject_ids:
+        missing = missing_roles(root, subj_id, pos=pos)
+        (ok.append(subj_id) if not missing else bad.update({subj_id: missing}))
+
+    if bad:
+        label = "positive" if pos else "negative"
+        print(f"\n{len(bad)} of {len(subject_ids)} {label} subjects are missing "
+              f"expected volumes:")
+        for subj_id, missing in bad.items():
+            wanted = ", ".join(f"{r} (*{pat}*)" for r, pat in missing.items())
+            print(f"  {subj_id}: no {wanted}")
+        if args.on_incomplete == "fail":
+            raise SystemExit("aborting (--on-incomplete fail). Pass --exclude-ids "
+                             "to drop them, or --on-incomplete skip to continue.")
+        print(f"  -> skipping them; {len(ok)} {label} subjects will be processed.\n")
+    return ok, bad
 
 
 def save_patches(xs, out_dir, subj_id, kind):
@@ -74,6 +103,7 @@ def already_done(out_dir, subj_id, kind):
 def prepare_positive(args, dirs, rng):
     subject_ids = [s for s in list_subject_ids(args.pos_root)
                    if s not in args.exclude_ids]
+    subject_ids, skipped = preflight(args.pos_root, subject_ids, True, args)
     total = 0
     for subj_id in tqdm(subject_ids, desc="pos subjects"):
         if not args.overwrite and already_done(dirs["pos"], subj_id, "pos"):
@@ -85,12 +115,13 @@ def prepare_positive(args, dirs, rng):
 
         xs_pos = get_pos_patches(mag, pha, prl, args.patch_size)
         total += save_patches(xs_pos, dirs["pos"], subj_id, "pos")
-    return len(subject_ids), total
+    return len(subject_ids), total, skipped
 
 
 def prepare_negative(args, dirs, rng):
     subject_ids = [s for s in list_subject_ids(args.neg_root)
                    if s not in args.exclude_ids]
+    subject_ids, skipped = preflight(args.neg_root, subject_ids, False, args)
     n_neg = n_neu = 0
     for subj_id in tqdm(subject_ids, desc="neg subjects"):
         done = (already_done(dirs["neg"], subj_id, "neg")
@@ -111,7 +142,7 @@ def prepare_negative(args, dirs, rng):
 
         n_neg += save_patches(xs_neg, dirs["neg"], subj_id, "neg")
         n_neu += save_patches(xs_neu, dirs["neu"], subj_id, "neu")
-    return len(subject_ids), n_neg, n_neu
+    return len(subject_ids), n_neg, n_neu, skipped
 
 
 def main(argv=None):
@@ -123,8 +154,8 @@ def main(argv=None):
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
 
-    n_pos_subj, n_pos = prepare_positive(args, dirs, rng)
-    n_neg_subj, n_neg, n_neu = prepare_negative(args, dirs, rng)
+    n_pos_subj, n_pos, skip_pos = prepare_positive(args, dirs, rng)
+    n_neg_subj, n_neg, n_neu, skip_neg = prepare_negative(args, dirs, rng)
 
     print(f"\npatch size {args.patch_size}, written under {args.out_dir.resolve()}")
     print(f"  positive: {n_pos:6d} new patches from {n_pos_subj} subjects -> {dirs['pos']}")
@@ -132,6 +163,11 @@ def main(argv=None):
     print(f"  negative: {n_neg:6d} new patches from {n_neg_subj} subjects -> {dirs['neg']}")
     for k, d in dirs.items():
         print(f"  {k} total on disk: {len(list(d.glob('*.pt')))}")
+
+    skipped = {**skip_pos, **skip_neg}
+    if skipped:
+        print(f"\nskipped {len(skipped)} incomplete subject(s): "
+              f"{', '.join(sorted(skipped))}")
 
 
 if __name__ == "__main__":

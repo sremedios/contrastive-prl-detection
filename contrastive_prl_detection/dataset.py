@@ -11,20 +11,73 @@ from torch.utils.data import Dataset
 #: Basename pattern for a saved patch: ``{subject_id}-{kind}_patch_{index:04d}.pt``
 PATCH_KINDS = ("pos", "neu", "neg")
 
+#: Substring that identifies each input volume inside a subject directory.
+#: `prl` is only expected for the PRL-positive cohort.
+FILE_PATTERNS = {
+    "pha": "_unwrapped.nii",
+    "mag": "MAG.nii",
+    "prl": "final_segmentation.nii",
+    "brainmask": "MAG_bet_mask.nii",
+    "aultra": "reg_separation.nii",
+}
+#: Roles returned by `get_fpaths`, in order.
+FILE_ROLES = ("pha", "mag", "prl", "brainmask", "aultra")
+
+
+class IncompleteSubject(Exception):
+    """A subject directory is missing one or more of the expected volumes."""
+
+    def __init__(self, root, subj_id, missing, present):
+        self.root, self.subj_id = Path(root), subj_id
+        self.missing, self.present = dict(missing), list(present)
+        wanted = ", ".join(f"{r} (*{p}*)" for r, p in missing.items())
+        listing = "\n    ".join(self.present) if self.present else "(directory is empty)"
+        super().__init__(
+            f"subject {subj_id!r} under {self.root} is missing: {wanted}\n"
+            f"  files present:\n    {listing}")
+
+
+def find_fpaths(root, subj_id, pos=True):
+    """Map each role to its file, or to None when nothing matches.
+
+    Substring matching, as in the notebook, so a role with several matches
+    resolves to the first in sorted order.
+    """
+    fpaths = sorted(f for f in (Path(root) / subj_id).iterdir() if f.is_file())
+    roles = FILE_ROLES if pos else tuple(r for r in FILE_ROLES if r != "prl")
+
+    found = {}
+    for role in FILE_ROLES:
+        if role not in roles:
+            found[role] = None
+            continue
+        matches = [x for x in fpaths if FILE_PATTERNS[role] in x.name]
+        found[role] = matches[0] if matches else None
+    return found
+
+
+def missing_roles(root, subj_id, pos=True):
+    """Roles with no matching file, as {role: pattern}. Empty dict means complete."""
+    try:
+        found = find_fpaths(root, subj_id, pos=pos)
+    except (NotADirectoryError, FileNotFoundError):
+        return dict(FILE_PATTERNS)
+    roles = FILE_ROLES if pos else tuple(r for r in FILE_ROLES if r != "prl")
+    return {r: FILE_PATTERNS[r] for r in roles if found[r] is None}
+
 
 def get_fpaths(root, subj_id, pos=True):
-    fpaths = sorted((Path(root) / subj_id).iterdir())
+    """(pha, mag, prl, brainmask, aultra) paths; `prl` is None when `pos=False`.
 
-    pha_fpath = [x for x in fpaths if "_unwrapped.nii" in x.name][0]
-    mag_fpath = [x for x in fpaths if "MAG.nii" in x.name][0]
-    if pos:
-        prl_fpath = [x for x in fpaths if "final_segmentation.nii" in x.name][0]
-    else:
-        prl_fpath = None
-    brainmask_fpath = [x for x in fpaths if "MAG_bet_mask.nii" in x.name][0]
-    aultra_fpath = [x for x in fpaths if "reg_separation.nii" in x.name][0]
-
-    return pha_fpath, mag_fpath, prl_fpath, brainmask_fpath, aultra_fpath
+    Raises `IncompleteSubject` naming the subject and listing what it does
+    contain, rather than an opaque IndexError.
+    """
+    found = find_fpaths(root, subj_id, pos=pos)
+    missing = missing_roles(root, subj_id, pos=pos)
+    if missing:
+        present = sorted(f.name for f in (Path(root) / subj_id).iterdir())
+        raise IncompleteSubject(root, subj_id, missing, present)
+    return tuple(found[r] for r in FILE_ROLES)
 
 
 def load_ras(fpath):
