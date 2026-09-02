@@ -1,3 +1,9 @@
+"""Fully-convolutional 3D residual encoder and whole-volume tiled inference."""
+
+import torch
+import torch.nn as nn
+
+
 class Block(nn.Module):
     def __init__(s, i, o):
         super().__init__()
@@ -9,12 +15,19 @@ class Block(nn.Module):
         s.a = nn.ReLU(True)
     def forward(s, x):
         c = s.c
-        return s.a(s.f(x) + s.s(x[:, :, c:-c, c:-c, c:-c]))     
-        
+        return s.a(s.f(x) + s.s(x[:, :, c:-c, c:-c, c:-c]))
+
+
 def resnet3d(c_in=1, c_out=3, w=(16, 32, 64, 128, 256)):
-    ch = (c_in,) + w
+    ch = (c_in,) + tuple(w)
     return nn.Sequential(*[Block(ch[i], ch[i+1]) for i in range(len(w))],
                          nn.Conv3d(w[-1], c_out, 1))
+
+
+def receptive_field_loss(w):
+    """Voxels lost per axis, total, by a `resnet3d` with `len(w)` blocks (4 per block)."""
+    return 4 * len(w)
+
 
 @torch.inference_mode()
 def tiled(net, x, tile=64, halo=32):

@@ -1,13 +1,21 @@
+"""Cyclic colormaps and plots for the S^1 embedding.
+
+`theta` is an angle, so a linear colormap would put a false seam somewhere on the
+circle.  `cyclic3` builds a perceptually-even cyclic map that pins one colour to
+each class anchor, so a theta-map can be read directly as a class map.
+"""
+
 import numpy as np
+import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, to_rgb
+
+from .contrastive import (ANCHORS_DEG, BISECTORS_DEG, CLASS_COLORS,
+                          CLASS_NAMES)
 
 _M = np.array([[0.4124564, 0.3575761, 0.1804375],
                [0.2126729, 0.7151522, 0.0721750],
                [0.0193339, 0.1191920, 0.9503041]])
 _W = np.array([0.95047, 1.0, 1.08883])
-
-
-cmap = cyclic3("#86101E", "#000000", "#4C8FD4")   # build once, outside the loop
 
 
 def _rgb2lab(rgb):
@@ -57,13 +65,21 @@ def cyclic3(c1, c2, c3, angles=(90, 210, 330), N=256, smooth=5, name="cyclic3"):
     return ListedColormap(rgb, name=name)
 
 
+#: Default theta colormap: red at the positive anchor, black at neutral, blue at
+#: negative.  Built once at import so plotting loops don't rebuild it.
+cmap = cyclic3("#86101E", "#000000", "#4C8FD4")
+
+
+
 def rotate_theta(theta, ref_deg=210.0):
     """Shift so the class at ref_deg lands on twilight's white seam (+/- pi)."""
     return np.angle(np.exp(1j * (theta - np.radians(ref_deg) + np.pi)))
 
-def circular_colorbar(ax, anchors_deg=(90.0, 210.0, 330.0),
-                      names=("pos", "neg", "neu"), cmap="twilight",
+def circular_colorbar(ax, anchors_deg=ANCHORS_DEG,
+                      names=("pos", "neu", "neg"), cmap=None,
                       r_in=0.62, r_out=1.0):
+    """Draw the theta legend as an annulus. `ax` must be a polar axes."""
+    cmap = globals()["cmap"] if cmap is None else cmap
     t = np.linspace(0, 2*np.pi, 721)
     r = np.linspace(r_in, r_out, 2)
     T, R = np.meshgrid(t, r)
@@ -73,10 +89,103 @@ def circular_colorbar(ax, anchors_deg=(90.0, 210.0, 330.0),
         a = np.radians(a_deg)
         ax.plot([a, a], [r_in, r_out], color="k", lw=1.4, zorder=3)
         ax.text(a, r_out * 1.30, nm, ha="center", va="center", fontsize=10)
-    for b_deg in (150.0, 270.0, 30.0):
+    for b_deg in BISECTORS_DEG:
         b = np.radians(b_deg)
         ax.plot([b, b], [r_in, r_out], color="w", lw=1.0, ls=":", zorder=3)
     ax.set_ylim(0, r_out * 1.15)
     ax.set_xticks([]); ax.set_yticks([])
     ax.spines["polar"].set_visible(False)
     return ax
+
+def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG,
+                    rng=None, show=True, savepath=None):
+    """Side-by-side: raw encoder output in R^2, and the same points on S^1."""
+    rng = np.random.default_rng(0) if rng is None else rng
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 6.2))
+    anchors_rad = np.radians(anchors_deg)
+    bisectors   = np.radians(BISECTORS_DEG)
+
+    # ---- (a) raw encoder output in R^2 ----
+    ax = axes[0]
+    lim = np.percentile(np.linalg.norm(u, axis=1), 99) * 1.15
+    for b in bisectors:                                  # decision boundaries
+        ax.plot([0, lim * 1.5 * np.cos(b)], [0, lim * 1.5 * np.sin(b)],
+                ls=":", lw=1.0, c="#999999", zorder=0)
+    for c, a in enumerate(anchors_rad):                  # anchor directions
+        ax.plot([0, lim * 1.5 * np.cos(a)], [0, lim * 1.5 * np.sin(a)],
+                ls="--", lw=1.0, c=CLASS_COLORS[c], alpha=0.55, zorder=0)
+    for c in range(3):
+        m = y == c
+        ax.scatter(u[m, 0], u[m, 1], s=9, c=CLASS_COLORS[c],
+                   alpha=0.7, linewidths=0, label=CLASS_NAMES[c])
+    ax.scatter([0], [0], s=28, c="k", marker="+", zorder=6)
+    ax.set_aspect("equal"); ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim)
+    ax.set_xlabel("$u_1$"); ax.set_ylabel("$u_2$")
+    ax.set_title("(a) raw encoder output $u \\in \\mathbb{R}^2$\n"
+                 "dashed = anchor directions, dotted = decision boundaries",
+                 fontsize=10)
+    ax.legend(fontsize=8, loc="upper right", framealpha=0.9)
+
+    # ---- (b) same points, radially projected onto S^1 ----
+    ax = axes[1]
+    circ = np.linspace(0, 2 * np.pi, 400)
+    ax.plot(np.cos(circ), np.sin(circ), color="#cccccc", lw=1, zorder=0)
+    for b in bisectors:
+        ax.plot([0, 1.35 * np.cos(b)], [0, 1.35 * np.sin(b)],
+                ls=":", lw=1.0, c="#bbbbbb", zorder=0)
+    jitter = 1 + 0.045 * rng.standard_normal(len(theta))   # viz only
+    for c in range(3):
+        m = y == c
+        ax.scatter(jitter[m] * np.cos(theta[m]), jitter[m] * np.sin(theta[m]),
+                   s=9, c=CLASS_COLORS[c], alpha=0.7, linewidths=0)
+    for c, a in enumerate(anchors_rad):
+        ax.scatter(np.cos(a), np.sin(a), s=190, marker="*", c=CLASS_COLORS[c],
+                   edgecolors="k", linewidths=0.9, zorder=5)
+    ax.set_aspect("equal"); ax.set_xlim(-1.5, 1.5); ax.set_ylim(-1.5, 1.5)
+    ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title("(b) after $z = u/\\|u\\|$: same angles, radius discarded\n"
+                 "(radial jitter for visibility only)", fontsize=10)
+
+    fig.tight_layout()
+    if savepath is not None:
+        fig.savefig(savepath, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return fig
+
+
+def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5,
+                      show=True, savepath=None):
+    """Grid of axial theta-map slices, optionally with a lesion mask overlaid.
+
+    `y_hat` is the theta-map wrapped into [0, 2pi) and `slices` indexes its last
+    axis, matching the orientation `dataset.load_ras` produces.
+    """
+    slices = list(slices)
+    ncols = min(ncols, len(slices))
+    nrows = int(np.ceil(len(slices) / ncols))
+    h, w = y_hat.shape[0], y_hat.shape[1]
+    figsize = (figscale * ncols * h / w, figscale * nrows)
+
+    fig, axs = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
+    if overlay is not None:
+        overlay = np.ma.masked_where(overlay == 0, overlay)
+
+    for ax, sl_idx in zip(axs.flat, slices):
+        ax.imshow(y_hat[..., sl_idx].T, cmap=cmap, vmin=0, vmax=2 * np.pi)
+        if overlay is not None:
+            ax.imshow(overlay[..., sl_idx].T, cmap="plasma", vmin=0, vmax=1, alpha=0.4)
+        ax.set_title(f"slice {sl_idx}", fontsize=8)
+    for ax in axs.flat:
+        ax.axis("off")
+
+    fig.tight_layout()
+    if savepath is not None:
+        fig.savefig(savepath, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return fig

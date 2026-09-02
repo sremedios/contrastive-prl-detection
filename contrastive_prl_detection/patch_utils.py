@@ -1,3 +1,14 @@
+"""Extraction of (magnitude, phase) training patches from a volume.
+
+Every patch is a `(2, *patch_size)` tensor stacked as `[magnitude, phase]`, in
+the RAS-ish orientation produced by `dataset.load_ras`.
+"""
+
+import numpy as np
+import torch
+from scipy import ndimage
+
+
 def get_patch_center(tup):
     x = (tup[0].stop + tup[0].start)//2
     y = tup[1].start # Annotation is only 2D so we just take the start here
@@ -6,7 +17,7 @@ def get_patch_center(tup):
 
 def get_patch_coords(cs, ps):
     return tuple(slice(c - p//2, c - p//2 + p) for c, p in zip(cs, ps))
-    
+
 def get_patches(mag, pha, centers, patch_size):
     patch_coords = [get_patch_coords(c, ps=patch_size) for c in centers]
     xs_pha = torch.stack([pha[coord] for coord in patch_coords])
@@ -41,4 +52,11 @@ def get_neu_patches(mag, pha, seg, brainmask, patch_size, n, frac_brain=0.95, rn
 def get_pos_patches(mag, pha, prl, patch_size):
     labels, _ = ndimage.label(prl > 0.5, structure=ndimage.generate_binary_structure(3, 3))
     centers = [get_patch_center(s) for s in ndimage.find_objects(labels)]
+    centers = [c for c in centers if _inbounds(c, prl.shape, patch_size)]
     return get_patches(mag, pha, centers, patch_size)
+
+
+def _inbounds(center, shape, patch_size):
+    """True if the patch around `center` fits entirely inside `shape`."""
+    return all(c - p // 2 >= 0 and c - p // 2 + p <= s
+               for c, p, s in zip(center, patch_size, shape))
