@@ -77,9 +77,9 @@ def parse_args(argv=None):
     g.add_argument("--wandb-name", default=None, help="run name; default is W&B's")
     g.add_argument("--wandb-mode", default="online",
                    choices=("online", "offline", "disabled"))
-    g.add_argument("--log-every", type=int, default=50,
+    g.add_argument("--log-every", type=int, default=10,
                    help="steps between loss points")
-    g.add_argument("--vol-every", type=int, default=0,
+    g.add_argument("--vol-every", type=int, default=50,
                    help="steps between whole-volume theta-map renders "
                         "(0 = only at the end). Needs --pos-root/--neg-root")
     g.add_argument("--pos-root", type=Path, default=None,
@@ -261,7 +261,7 @@ def main(argv=None):
     model.train()
     loader_pbar = tqdm(data_loader)
     step = 0
-    running = None
+    last_loss = None
     val_acc = None
 
     for pos, neu, neg in loader_pbar:
@@ -280,17 +280,15 @@ def main(argv=None):
         opt.step()
 
         step += 1
-        running = loss.item() if running is None else 0.98 * running + 0.02 * loss.item()
-        loader_pbar.set_postfix({"loss": f"{loss.item():.4f}", "ema": f"{running:.4f}"})
+        last_loss = loss.item()
+        loader_pbar.set_postfix({"loss": f"{last_loss:.4f}"})
 
         # Everything for this step goes in one payload: a second log() call at an
         # already-committed step makes W&B advance its own counter, which
         # desynchronises the images from the loss curve.
         payload = {}
         if args.log_every and step % args.log_every == 0:
-            payload |= {"train/loss": loss.item(), "train/loss_ema": running,
-                        "train/lr": opt.param_groups[0]["lr"],
-                        "train/epoch_frac": step * args.batch_size / max(args.n_patches, 1)}
+            payload |= {"train/loss": last_loss}
 
         if val_loader is not None and args.val_every and step % args.val_every == 0:
             val_acc, per_class, fig = validate(model, val_loader, device,
@@ -331,11 +329,11 @@ def main(argv=None):
         logger.log(final, step=step + 1)
 
     save_checkpoint(args.out, model, args, ct.ANCHORS_DEG, step, val_acc)
-    logger.summary({"final_loss_ema": running, "val_accuracy": val_acc,
+    logger.summary({"final_loss": last_loss, "val_accuracy": val_acc,
                     "steps": step})
     logger.finish()
     print(f"saved {args.out.resolve()}")
-    print(json.dumps({"steps": step, "final_loss_ema": running,
+    print(json.dumps({"steps": step, "final_loss": last_loss,
                       "val_accuracy": val_acc, "withheld_ids": withheld}, indent=2))
 
 
