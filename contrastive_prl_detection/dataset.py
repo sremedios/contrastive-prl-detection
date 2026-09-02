@@ -1,5 +1,6 @@
 """Filesystem layout, volume loading, and the patch Dataset used for training."""
 
+import math
 import random
 from pathlib import Path
 
@@ -87,6 +88,25 @@ def load_ras(fpath):
     return torch.from_numpy(x)
 
 
+def normalize_intensity(x, lo=-math.pi, hi=math.pi):
+    """Linearly rescale a volume's full range onto [lo, hi].
+
+    Magnitude has no absolute scale, so it is put on the same range as phase
+    before any patch is cut. Done per volume, never per patch: at inference the
+    encoder sweeps a whole volume, and a per-patch rescaling could not be
+    reproduced there without breaking the patch/dense equivalence.
+    """
+    mn, mx = float(x.min()), float(x.max())
+    if mx - mn < 1e-8:                       # flat volume; nothing to stretch
+        return torch.full_like(x, (lo + hi) / 2)
+    return (x - mn) / (mx - mn) * (hi - lo) + lo
+
+
+def load_mag(fpath, lo=-math.pi, hi=math.pi):
+    """Load a magnitude volume and normalise it. Use this everywhere, not load_ras."""
+    return normalize_intensity(load_ras(fpath), lo, hi)
+
+
 def unload_ras(x):
     """Inverse of `load_ras`'s axis permutation, for writing results back out."""
     x = x.detach().cpu().numpy() if torch.is_tensor(x) else np.asarray(x)
@@ -113,6 +133,22 @@ def subject_ids_in(patch_dir):
     return sorted({subject_id_of(f) for f in Path(patch_dir).glob("*.pt")})
 
 
+def random_octahedral(x, rng):
+    """A random element of the cube's symmetry group: 90 deg turns and flips.
+
+    Index permutations and reversals only, so no interpolation and no resampling
+    blur; `x` is (C, D, H, W) and the channel axis is left alone.
+    """
+    for dims in ((1, 2), (1, 3), (2, 3)):
+        k = rng.randrange(4)
+        if k:
+            x = torch.rot90(x, k, dims=dims)
+    for d in (1, 2, 3):
+        if rng.random() < 0.5:
+            x = torch.flip(x, dims=(d,))
+    return x.contiguous()
+
+
 class TrainSet(Dataset):
     """Draws one (positive, neutral, negative) patch triplet per item.
 
@@ -126,7 +162,7 @@ class TrainSet(Dataset):
     """
 
     def __init__(self, pos_dir, neu_dir, neg_dir, n_patches,
-                 withheld_ids=(), invert=False, seed=None):
+                 withheld_ids=(), invert=False, seed=None, augment=False):
         self.withheld_ids = tuple(withheld_ids)
         self.invert = invert
 
@@ -143,6 +179,7 @@ class TrainSet(Dataset):
                     f"withheld_ids={self.withheld_ids!r} (invert={invert})")
 
         self.n_patches = n_patches
+        self.augment = augment
         self._rng = random.Random(seed)
 
     def _collect(self, d):
@@ -152,12 +189,14 @@ class TrainSet(Dataset):
     def __len__(self):
         return self.n_patches
 
-    def __getitem__(self, _):
-        pos = torch.load(self._rng.choice(self.pos_fpaths), weights_only=True)
-        neu = torch.load(self._rng.choice(self.neu_fpaths), weights_only=True)
-        neg = torch.load(self._rng.choice(self.neg_fpaths), weights_only=True)
+    def _draw(self, fpaths):
+        x = torch.load(self._rng.choice(fpaths), weights_only=True)
+        return random_octahedral(x, self._rng) if self.augment else x
 
-        return pos, neu, neg
+    def __getitem__(self, _):
+        return (self._draw(self.pos_fpaths),
+                self._draw(self.neu_fpaths),
+                self._draw(self.neg_fpaths))
 
 
 def worker_init_fn(worker_id):

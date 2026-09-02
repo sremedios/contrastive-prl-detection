@@ -12,7 +12,7 @@ rendered at fixed slices, so successive steps are directly comparable.
 import torch
 
 from . import contrastive as ct
-from .dataset import get_fpaths, load_ras
+from .dataset import get_fpaths, load_mag, load_ras
 from .inference import infer_volume, pick_slices, wrap_theta
 
 
@@ -72,7 +72,7 @@ class VolumeProbe:
 
         pha_fpath, mag_fpath, prl_fpath, _, _ = get_fpaths(root, subj_id, pos=is_pos)
         self.pha = load_ras(pha_fpath)
-        self.mag = load_ras(mag_fpath)
+        self.mag = load_mag(mag_fpath)
         self.prl = load_ras(prl_fpath).numpy() if is_pos else None
         self.slices = pick_slices(self.prl, self.mag, n_slices, is_pos)
 

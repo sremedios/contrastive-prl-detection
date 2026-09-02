@@ -59,7 +59,9 @@ def parse_args(argv=None):
     p.add_argument("--tau", type=float, default=ct.TAU)
     p.add_argument("--width", type=int, nargs="+", default=DEFAULT_WIDTH)
     p.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--no-augment", action="store_true",
+                   help="disable the 90-degree rotations and flips on training patches")
     p.add_argument("--seed", type=int, default=0)
 
     p.add_argument("--val-every", type=int, default=0,
@@ -116,9 +118,10 @@ def resolve_withheld(args, dirs):
 
 
 def make_loader(dirs, n_patches, batch_size, withheld, invert, workers, seed,
-                pin_memory=False):
+                pin_memory=False, augment=False):
     ds = TrainSet(dirs["pos"], dirs["neu"], dirs["neg"], n_patches,
-                  withheld_ids=withheld, invert=invert, seed=seed)
+                  withheld_ids=withheld, invert=invert, seed=seed,
+                  augment=augment)
     loader = DataLoader(ds, batch_size=batch_size,
                         shuffle=False,           # TrainSet already samples at random
                         pin_memory=pin_memory, num_workers=workers,
@@ -209,7 +212,7 @@ def main(argv=None):
     trainset, data_loader = make_loader(dirs, args.n_patches, args.batch_size,
                                         withheld, invert=False,
                                         workers=args.workers, seed=args.seed,
-                                        pin_memory=pin)
+                                        pin_memory=pin, augment=not args.no_augment)
     print(f"train pool: {len(trainset.pos_fpaths)} pos / "
           f"{len(trainset.neu_fpaths)} neu / {len(trainset.neg_fpaths)} neg patches")
 
