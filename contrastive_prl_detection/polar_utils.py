@@ -85,14 +85,18 @@ def circular_colorbar(ax, anchors_deg=ANCHORS_DEG,
     T, R = np.meshgrid(t, r)
     ax.pcolormesh(T, R, T, cmap=cmap, vmin=0, vmax=2*np.pi,
                   shading="nearest", rasterized=True)
+    # shading="nearest" centres cells on the given radii, so the mesh actually
+    # reaches half a cell beyond r_out. Labels are placed past that true edge,
+    # not past r_out, or they sit on top of the ring.
+    r_edge = r_out + (r_out - r_in) / 2
     for a_deg, nm in zip(anchors_deg, names):
         a = np.radians(a_deg)
         ax.plot([a, a], [r_in, r_out], color="k", lw=1.4, zorder=3)
-        ax.text(a, r_out * 1.30, nm, ha="center", va="center", fontsize=10)
+        ax.text(a, r_edge * 1.18, nm, ha="center", va="center", fontsize=10)
     for b_deg in BISECTORS_DEG:
         b = np.radians(b_deg)
         ax.plot([b, b], [r_in, r_out], color="w", lw=1.0, ls=":", zorder=3)
-    ax.set_ylim(0, r_out * 1.15)
+    ax.set_ylim(0, r_edge * 1.34)
     ax.set_xticks([]); ax.set_yticks([])
     ax.spines["polar"].set_visible(False)
     return ax
@@ -156,12 +160,18 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG,
     return fig
 
 
-def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5,
+def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5, dpi=200,
+                      title=None, overlay_color="#ffd400", overlay_lw=1.0,
                       show=True, savepath=None, close=True):
-    """Grid of axial theta-map slices, optionally with a lesion mask overlaid.
+    """Grid of axial theta-map slices, optionally outlining a lesion mask.
 
     `y_hat` is the theta-map wrapped into [0, 2pi) and `slices` indexes its last
-    axis, matching the orientation `dataset.load_ras` produces.
+    axis, matching the orientation `dataset.load_ras` produces. The overlay is
+    drawn as a contour rather than a translucent fill, so the theta values it
+    marks stay readable underneath it.
+
+    Constrained layout, not tight_layout: it accounts for `suptitle`, which
+    tight_layout overlaps with the top row.
     """
     slices = list(slices)
     ncols = min(ncols, len(slices))
@@ -169,21 +179,49 @@ def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5,
     h, w = y_hat.shape[0], y_hat.shape[1]
     figsize = (figscale * ncols * h / w, figscale * nrows)
 
-    fig, axs = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
-    if overlay is not None:
-        overlay = np.ma.masked_where(overlay == 0, overlay)
+    fig, axs = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False,
+                            dpi=dpi, constrained_layout=True)
 
     for ax, sl_idx in zip(axs.flat, slices):
-        ax.imshow(y_hat[..., sl_idx].T, cmap=cmap, vmin=0, vmax=2 * np.pi)
+        ax.imshow(y_hat[..., sl_idx].T, cmap=cmap, vmin=0, vmax=2 * np.pi,
+                  interpolation="nearest")
         if overlay is not None:
-            ax.imshow(overlay[..., sl_idx].T, cmap="plasma", vmin=0, vmax=1, alpha=0.4)
+            m = np.asarray(overlay[..., sl_idx]).T
+            if (m > 0.5).any():   # contour warns on an all-empty slice
+                ax.contour(m, levels=[0.5], colors=[overlay_color],
+                           linewidths=overlay_lw)
         ax.set_title(f"slice {sl_idx}", fontsize=8)
     for ax in axs.flat:
         ax.axis("off")
+    if title:
+        fig.suptitle(title, fontsize=10)
 
-    fig.tight_layout()
     if savepath is not None:
-        fig.savefig(savepath, dpi=150, bbox_inches="tight")
+        fig.savefig(savepath, bbox_inches="tight")
+    if show:
+        plt.show()
+    elif close:
+        plt.close(fig)
+    return fig
+
+
+def plot_circular_colorbar(anchors_deg=ANCHORS_DEG, names=("pos", "neu", "neg"),
+                           figscale=3.2, dpi=200, title=None,
+                           show=True, savepath=None, close=True):
+    """Standalone theta legend: the cyclic colormap drawn as an annulus.
+
+    A key for `plot_theta_slices`, whose colours encode an angle and so cannot
+    be read off a linear colorbar.
+    """
+    fig, ax = plt.subplots(figsize=(figscale, figscale), dpi=dpi,
+                           subplot_kw={"projection": "polar"},
+                           constrained_layout=True)
+    circular_colorbar(ax, anchors_deg=anchors_deg, names=names)
+    if title:
+        ax.set_title(title, fontsize=10, pad=14)
+
+    if savepath is not None:
+        fig.savefig(savepath, bbox_inches="tight")
     if show:
         plt.show()
     elif close:

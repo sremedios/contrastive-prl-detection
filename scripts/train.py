@@ -88,6 +88,8 @@ def parse_args(argv=None):
                    help="negative cohort root, likewise")
     g.add_argument("--vol-slices", type=int, default=4,
                    help="slices per rendered theta-map")
+    g.add_argument("--vol-dpi", type=int, default=200,
+                   help="resolution of the rendered theta-map panels")
 
     p.add_argument("--ckpt-every", type=int, default=0,
                    help="also write an intermediate checkpoint every N steps")
@@ -163,17 +165,12 @@ def validate(model, val_loader, device, anchors_deg, step, plot_dir,
 
 
 def volume_payload(logger, probes, model, device, tau, anchors_deg, step):
-    """Render each withheld volume's theta-map. Returns metrics to merge and log."""
+    """Render each withheld volume's theta-map. Returns the images to log."""
     payload = {}
     for probe in probes:
-        fig, y_hat, counts = probe.render(model, device, tau, anchors_deg)
-        tag = probe.tag
-        payload[f"{tag}/theta_slices"] = logger.image(
+        fig = probe.render(model, device, tau, anchors_deg, step=step)
+        payload[f"{probe.tag}/theta_slices"] = logger.image(
             fig, caption=f"step {step} - slices {probe.slices}")
-        payload[f"{tag}/theta_hist"] = logger.histogram(y_hat)
-        frac = counts / max(counts.sum(), 1)
-        for name, f in zip(("positive", "neutral", "negative"), frac):
-            payload[f"{tag}/frac_{name}"] = float(f)
         plt.close(fig)
     return payload
 
@@ -252,10 +249,17 @@ def main(argv=None):
     probes = []
     if args.wandb and (args.pos_root or args.neg_root):
         probes = make_probes(args.pos_root, args.neg_root, withheld,
-                             n_slices=args.vol_slices)
+                             n_slices=args.vol_slices, dpi=args.vol_dpi)
         print(f"volume probes: {[pr.tag for pr in probes] or '(none)'}")
     elif args.wandb and args.vol_every:
         print("--vol-every needs --pos-root and/or --neg-root; skipping volume renders")
+
+    # The theta legend never changes, so it is logged once rather than per step.
+    if logger.enabled:
+        from contrastive_prl_detection.polar_utils import plot_circular_colorbar
+        cbar = plot_circular_colorbar(dpi=args.vol_dpi, show=False, close=False)
+        logger.log({"volume/theta_colorbar": logger.image(cbar)}, step=0)
+        plt.close(cbar)
 
     # ===== Training =====
     model.train()
