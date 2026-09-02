@@ -98,7 +98,7 @@ def circular_colorbar(ax, anchors_deg=ANCHORS_DEG,
     return ax
 
 def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG,
-                    rng=None, show=True, savepath=None):
+                    rng=None, show=True, savepath=None, close=True):
     """Side-by-side: raw encoder output in R^2, and the same points on S^1."""
     rng = np.random.default_rng(0) if rng is None else rng
     fig, axes = plt.subplots(1, 2, figsize=(13.5, 6.2))
@@ -151,13 +151,13 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG,
         fig.savefig(savepath, dpi=150, bbox_inches="tight")
     if show:
         plt.show()
-    else:
+    elif close:
         plt.close(fig)
     return fig
 
 
 def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5,
-                      show=True, savepath=None):
+                      show=True, savepath=None, close=True):
     """Grid of axial theta-map slices, optionally with a lesion mask overlaid.
 
     `y_hat` is the theta-map wrapped into [0, 2pi) and `slices` indexes its last
@@ -186,6 +186,6 @@ def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5,
         fig.savefig(savepath, dpi=150, bbox_inches="tight")
     if show:
         plt.show()
-    else:
+    elif close:
         plt.close(fig)
     return fig

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -31,6 +32,7 @@ from contrastive_prl_detection import contrastive as ct
 from contrastive_prl_detection.dataset import (TrainSet, subject_ids_in,
                                                worker_init_fn)
 from contrastive_prl_detection.net import resnet3d
+from contrastive_prl_detection.wandb_utils import Logger, make_probes
 
 DEFAULT_WIDTH = (16, 32, 64, 64, 64, 64, 64, 64)
 
@@ -66,6 +68,27 @@ def parse_args(argv=None):
                    help="triplets per validation pass")
     p.add_argument("--val-plot-dir", type=Path, default=None,
                    help="save the R^2 / S^1 scatter here instead of showing it")
+    g = p.add_argument_group("weights & biases")
+    g.add_argument("--wandb", action="store_true",
+                   help="log losses, validation metrics, and theta-maps to W&B "
+                        "(run `wandb login` once on this machine first)")
+    g.add_argument("--wandb-project", default="contrastive-prl-detection")
+    g.add_argument("--wandb-entity", default=None)
+    g.add_argument("--wandb-name", default=None, help="run name; default is W&B's")
+    g.add_argument("--wandb-mode", default="online",
+                   choices=("online", "offline", "disabled"))
+    g.add_argument("--log-every", type=int, default=50,
+                   help="steps between loss points")
+    g.add_argument("--vol-every", type=int, default=0,
+                   help="steps between whole-volume theta-map renders "
+                        "(0 = only at the end). Needs --pos-root/--neg-root")
+    g.add_argument("--pos-root", type=Path, default=None,
+                   help="positive cohort root, so the withheld volume can be swept")
+    g.add_argument("--neg-root", type=Path, default=None,
+                   help="negative cohort root, likewise")
+    g.add_argument("--vol-slices", type=int, default=4,
+                   help="slices per rendered theta-map")
+
     p.add_argument("--ckpt-every", type=int, default=0,
                    help="also write an intermediate checkpoint every N steps")
     return p.parse_args(argv)
@@ -119,7 +142,8 @@ def check_patch_fits_encoder(model, sample, device, width):
     return out.shape[1]
 
 
-def validate(model, val_loader, device, anchors_deg, step, plot_dir):
+def validate(model, val_loader, device, anchors_deg, step, plot_dir,
+             show_plot=False):
     u, z, y, theta = ct.embed(model, val_loader, device)
     acc, per_class = ct.accuracy_from_theta(theta, y, anchors_deg)
     model.train()
@@ -129,13 +153,36 @@ def validate(model, val_loader, device, anchors_deg, step, plot_dir):
     if plot_dir is not None:
         plot_dir.mkdir(parents=True, exist_ok=True)
         savepath = plot_dir / f"embedding_step{step:07d}.png"
-    plot_both_views(u, z, y, theta, anchors_deg=anchors_deg,
-                    show=plot_dir is None, savepath=savepath)
+    fig = plot_both_views(u, z, y, theta, anchors_deg=anchors_deg,
+                          show=show_plot, savepath=savepath, close=False)
 
     named = ", ".join(f"{n}={a:.3f}" for n, a in zip(ct.CLASS_NAMES, per_class))
     print(f"[step {step}] val accuracy {acc:.4f}  ({named})"
           + (f"  -> {savepath}" if savepath else ""))
-    return acc, per_class
+    return acc, per_class, fig
+
+
+def volume_payload(logger, probes, model, device, tau, anchors_deg, step):
+    """Render each withheld volume's theta-map. Returns metrics to merge and log."""
+    payload = {}
+    for probe in probes:
+        fig, y_hat, counts = probe.render(model, device, tau, anchors_deg)
+        tag = probe.tag
+        payload[f"{tag}/theta_slices"] = logger.image(
+            fig, caption=f"step {step} - slices {probe.slices}")
+        payload[f"{tag}/theta_hist"] = logger.histogram(y_hat)
+        frac = counts / max(counts.sum(), 1)
+        for name, f in zip(("positive", "neutral", "negative"), frac):
+            payload[f"{tag}/frac_{name}"] = float(f)
+        plt.close(fig)
+    return payload
+
+
+def val_payload(logger, acc, per_class, fig, step):
+    return {"val/accuracy": acc,
+            **{f"val/acc_{n}": a for n, a in
+               zip(("positive", "neutral", "negative"), per_class)},
+            "val/embedding": logger.image(fig, caption=f"step {step}")}
 
 
 def save_checkpoint(path, model, args, anchors_deg, step, val_acc):
@@ -182,7 +229,7 @@ def main(argv=None):
         except ValueError as e:
             print(f"validation disabled: {e}")
 
-    if args.val_plot_dir is not None:
+    if args.val_plot_dir is not None or args.wandb:
         matplotlib.use("Agg")
 
     # ===== Network =====
@@ -195,6 +242,20 @@ def main(argv=None):
                                      args.width)
     if c_out != 2:
         raise SystemExit(f"encoder must emit 2 channels for S^1, got {c_out}")
+
+    # ===== Logging =====
+    logger = Logger(enabled=args.wandb, project=args.wandb_project,
+                    entity=args.wandb_entity, name=args.wandb_name,
+                    mode=args.wandb_mode,
+                    config={k: (str(v) if isinstance(v, Path) else v)
+                            for k, v in vars(args).items()})
+    probes = []
+    if args.wandb and (args.pos_root or args.neg_root):
+        probes = make_probes(args.pos_root, args.neg_root, withheld,
+                             n_slices=args.vol_slices)
+        print(f"volume probes: {[pr.tag for pr in probes] or '(none)'}")
+    elif args.wandb and args.vol_every:
+        print("--vol-every needs --pos-root and/or --neg-root; skipping volume renders")
 
     # ===== Training =====
     model.train()
@@ -222,21 +283,57 @@ def main(argv=None):
         running = loss.item() if running is None else 0.98 * running + 0.02 * loss.item()
         loader_pbar.set_postfix({"loss": f"{loss.item():.4f}", "ema": f"{running:.4f}"})
 
+        # Everything for this step goes in one payload: a second log() call at an
+        # already-committed step makes W&B advance its own counter, which
+        # desynchronises the images from the loss curve.
+        payload = {}
+        if args.log_every and step % args.log_every == 0:
+            payload |= {"train/loss": loss.item(), "train/loss_ema": running,
+                        "train/lr": opt.param_groups[0]["lr"],
+                        "train/epoch_frac": step * args.batch_size / max(args.n_patches, 1)}
+
         if val_loader is not None and args.val_every and step % args.val_every == 0:
-            val_acc, _ = validate(model, val_loader, device, ct.ANCHORS_DEG,
-                                  step, args.val_plot_dir)
+            val_acc, per_class, fig = validate(model, val_loader, device,
+                                               ct.ANCHORS_DEG, step, args.val_plot_dir,
+                                               show_plot=args.val_plot_dir is None
+                                                         and not args.wandb)
+            payload |= val_payload(logger, val_acc, per_class, fig, step)
+            plt.close(fig)
+
+        if probes and args.vol_every and step % args.vol_every == 0:
+            payload |= volume_payload(logger, probes, model, device, args.tau,
+                                      ct.ANCHORS_DEG, step)
+
+        if payload:
+            logger.log(payload, step=step)
         if args.ckpt_every and step % args.ckpt_every == 0:
             save_checkpoint(args.out.with_suffix(f".step{step}.pt"), model, args,
                             ct.ANCHORS_DEG, step, val_acc)
 
     loader_pbar.close()
 
-    ran_at_last_step = args.val_every and step % args.val_every == 0
-    if val_loader is not None and not ran_at_last_step:
-        val_acc, _ = validate(model, val_loader, device, ct.ANCHORS_DEG,
-                              step, args.val_plot_dir)
+    # Final validation and volume render, at a step past the last training one so
+    # the payload never collides with an already-committed step.
+    final = {}
+    if val_loader is not None and not (args.val_every and step % args.val_every == 0):
+        val_acc, per_class, fig = validate(model, val_loader, device, ct.ANCHORS_DEG,
+                                           step, args.val_plot_dir,
+                                           show_plot=args.val_plot_dir is None
+                                                     and not args.wandb)
+        final |= val_payload(logger, val_acc, per_class, fig, step)
+        plt.close(fig)
+
+    # Always render the volumes once at the end, whatever --vol-every says.
+    if probes and not (args.vol_every and step % args.vol_every == 0):
+        final |= volume_payload(logger, probes, model, device, args.tau,
+                                ct.ANCHORS_DEG, step)
+    if final:
+        logger.log(final, step=step + 1)
 
     save_checkpoint(args.out, model, args, ct.ANCHORS_DEG, step, val_acc)
+    logger.summary({"final_loss_ema": running, "val_accuracy": val_acc,
+                    "steps": step})
+    logger.finish()
     print(f"saved {args.out.resolve()}")
     print(json.dumps({"steps": step, "final_loss_ema": running,
                       "val_accuracy": val_acc, "withheld_ids": withheld}, indent=2))

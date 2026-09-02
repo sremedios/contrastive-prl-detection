@@ -11,6 +11,7 @@ Because the encoder is fully convolutional, the same weights that classify a
 patch can be swept over a whole volume to produce a continuous theta-map.
 """
 
-from . import dataset, net, patch_utils, polar_utils, contrastive  # noqa: F401
+from . import (contrastive, dataset, inference, net, patch_utils,  # noqa: F401
+               polar_utils)
 
 __version__ = "0.1.0"
