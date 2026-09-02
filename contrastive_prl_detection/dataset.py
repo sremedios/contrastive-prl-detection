@@ -1,6 +1,5 @@
 """Filesystem layout, volume loading, and the patch Dataset used for training."""
 
-import math
 import random
 from pathlib import Path
 
@@ -88,23 +87,37 @@ def load_ras(fpath):
     return torch.from_numpy(x)
 
 
-def normalize_intensity(x, lo=-math.pi, hi=math.pi):
-    """Linearly rescale a volume's full range onto [lo, hi].
+#: Percentiles defining the input range that is mapped onto [-1, 1].
+NORM_PERCENTILES = (0.5, 99.5)
 
-    Magnitude has no absolute scale, so it is put on the same range as phase
-    before any patch is cut. Done per volume, never per patch: at inference the
-    encoder sweeps a whole volume, and a per-patch rescaling could not be
-    reproduced there without breaking the patch/dense equivalence.
+
+def normalize_intensity(x, percentiles=NORM_PERCENTILES, lo=-1.0, hi=1.0, clip=True):
+    """Robustly rescale a volume onto [lo, hi] using a percentile range.
+
+    Magnitude has no absolute scale and unwrapped phase is not confined to
+    [-pi, pi], so both are put on a common range before any patch is cut. The
+    percentile window keeps a handful of hot voxels from compressing the tissue
+    contrast into a sliver of the output range, which a min/max stretch would do.
+
+    Per volume, never per patch: at inference the encoder sweeps a whole volume,
+    and a per-patch rescaling could not be reproduced there without breaking the
+    equivalence between the patch classifier and the dense sweep.
     """
-    mn, mx = float(x.min()), float(x.max())
-    if mx - mn < 1e-8:                       # flat volume; nothing to stretch
-        return torch.full_like(x, (lo + hi) / 2)
-    return (x - mn) / (mx - mn) * (hi - lo) + lo
+    a = x.detach().cpu().numpy() if torch.is_tensor(x) else np.asarray(x)
+    p_lo, p_hi = np.percentile(a, percentiles)
+    if p_hi - p_lo < 1e-8:                   # flat volume; nothing to stretch
+        return torch.full_like(torch.as_tensor(x), (lo + hi) / 2)
+    y = (torch.as_tensor(x) - float(p_lo)) / float(p_hi - p_lo) * (hi - lo) + lo
+    return y.clamp(lo, hi) if clip else y
 
 
-def load_mag(fpath, lo=-math.pi, hi=math.pi):
-    """Load a magnitude volume and normalise it. Use this everywhere, not load_ras."""
-    return normalize_intensity(load_ras(fpath), lo, hi)
+def load_norm(fpath, percentiles=NORM_PERCENTILES, lo=-1.0, hi=1.0):
+    """Load an intensity volume and normalise it.
+
+    Use this for magnitude and phase; `load_ras` stays raw, for masks and
+    segmentations, whose values are labels and must not be rescaled.
+    """
+    return normalize_intensity(load_ras(fpath), percentiles, lo, hi)
 
 
 def unload_ras(x):

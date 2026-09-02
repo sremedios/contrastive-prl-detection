@@ -11,9 +11,12 @@ rendered at fixed slices, so successive steps are directly comparable.
 
 import torch
 
+import numpy as np
+
 from . import contrastive as ct
-from .dataset import get_fpaths, load_mag, load_ras
+from .dataset import get_fpaths, load_norm, load_ras
 from .inference import infer_volume, pick_slices, wrap_theta
+from .patch_utils import get_neg_patches, get_neu_patches, get_pos_patches
 
 
 class Logger:
@@ -62,7 +65,7 @@ class VolumeProbe:
     """
 
     def __init__(self, root, subj_id, is_pos=True, n_slices=4, tile=64, halo=32,
-                 dpi=200):
+                 dpi=200, n_patches=64, patch_size=(33, 33, 33), seed=0):
         self.subj_id, self.is_pos = subj_id, is_pos
         self.cohort = "pos" if is_pos else "neg"
         #: W&B key prefix. Includes the cohort so a positive and a negative
@@ -70,11 +73,43 @@ class VolumeProbe:
         self.tag = f"volume/{self.cohort}/{subj_id}"
         self.tile, self.halo, self.dpi = tile, halo, dpi
 
-        pha_fpath, mag_fpath, prl_fpath, _, _ = get_fpaths(root, subj_id, pos=is_pos)
-        self.pha = load_ras(pha_fpath)
-        self.mag = load_mag(mag_fpath)
+        pha_fpath, mag_fpath, prl_fpath, brainmask_fpath, aultra_fpath = get_fpaths(
+            root, subj_id, pos=is_pos)
+        self.pha = load_norm(pha_fpath)
+        self.mag = load_norm(mag_fpath)
         self.prl = load_ras(prl_fpath).numpy() if is_pos else None
         self.slices = pick_slices(self.prl, self.mag, n_slices, is_pos)
+        self.patches = self._sample_patches(brainmask_fpath, aultra_fpath,
+                                            n_patches, patch_size, seed)
+
+    def _sample_patches(self, brainmask_fpath, aultra_fpath, n, patch_size, seed):
+        """Cut a fixed patch sample from this volume, by class index.
+
+        Sampled once, with the same rules `prepare_data` uses for this cohort,
+        so the scatter moves because the model moved and not because the sample
+        was redrawn. Held out of training, and drawn live from the volume rather
+        than from the handful of patches prep wrote, so the neutral and negative
+        classes are far better covered than the stored pool.
+        """
+        rng = np.random.default_rng(seed)
+        out = {}
+        if self.is_pos:
+            xs = get_pos_patches(self.mag, self.pha, self.prl, patch_size)
+            if len(xs):
+                sel = rng.choice(len(xs), size=min(n, len(xs)), replace=False)
+                out[0] = xs[sorted(sel)]                      # 0 = positive
+        else:
+            seg = load_ras(aultra_fpath)
+            seg[seg != 0] = 1
+            brainmask = load_ras(brainmask_fpath)
+            neu = get_neu_patches(self.mag, self.pha, seg, brainmask, patch_size,
+                                  n=n, rng=rng)
+            neg = get_neg_patches(self.mag, self.pha, seg, patch_size, n=n, rng=rng)
+            if len(neu):
+                out[1] = neu                                  # 1 = neutral
+            if len(neg):
+                out[2] = neg                                  # 2 = negative
+        return out
 
     def render(self, model, device, tau=ct.TAU, anchors_deg=ct.ANCHORS_DEG,
                step=None):
@@ -97,8 +132,37 @@ class VolumeProbe:
         return fig
 
 
+@torch.no_grad()
+def embed_probe_patches(probes, model, device, batch=32):
+    """Run the probes' held-out patches through the model. Returns (u, z, y, theta).
+
+    The patch-wise counterpart to the theta-map: it shows whether the three
+    classes separate on the circle for volumes the model never trained on.
+    """
+    xs, ys = [], []
+    for probe in probes:
+        for cls, t in sorted(probe.patches.items()):
+            xs.append(t)
+            ys.append(torch.full((len(t),), cls, dtype=torch.long))
+    if not xs:
+        return None
+
+    x, y = torch.cat(xs), torch.cat(ys).numpy()
+    was_training = model.training
+    model.eval()
+    try:
+        us = [model(x[i:i + batch].to(device)).flatten(1).cpu()
+              for i in range(0, len(x), batch)]
+    finally:
+        model.train(was_training)
+
+    u = torch.cat(us).numpy()
+    z, theta = ct.theta_np(u)
+    return u, z, y, theta
+
+
 def make_probes(pos_root, neg_root, withheld_ids, n_slices=4, tile=64, halo=32,
-                dpi=200):
+                dpi=200, n_patches=64, patch_size=(33, 33, 33)):
     """Build a probe per cohort root given, for whichever withheld id it holds."""
     probes = []
     for root, is_pos in ((pos_root, True), (neg_root, False)):
@@ -109,7 +173,7 @@ def make_probes(pos_root, neg_root, withheld_ids, n_slices=4, tile=64, halo=32,
                 continue
             try:
                 probes.append(VolumeProbe(root, subj_id, is_pos, n_slices, tile,
-                                          halo, dpi))
+                                          halo, dpi, n_patches, patch_size))
             except Exception as e:                     # a probe is never worth a crash
                 print(f"skipping volume probe for {subj_id}: {type(e).__name__}: {e}")
     return probes

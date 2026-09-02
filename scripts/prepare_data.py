@@ -30,7 +30,7 @@ from tqdm.auto import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from contrastive_prl_detection.dataset import (IncompleteSubject, get_fpaths,
-                                               list_subject_ids, load_mag,
+                                               list_subject_ids, load_norm,
                                                load_ras, missing_roles,
                                                patch_fname)
 from contrastive_prl_detection.patch_utils import (get_neg_patches,
@@ -91,12 +91,11 @@ def preflight(root, subject_ids, pos, args):
     return ok, bad
 
 
-def report_geometry(extents, pha_range):
+def report_geometry(extents):
     """Print what the lesion annotations and the phase range actually look like.
 
-    The bounding-box extents say which axis carries the 2D annotation (the one
-    with extent 1 throughout). The phase range says whether unwrapped phase
-    really sits in [-pi, pi], which is the range magnitude is normalised to.
+    The bounding-box extents say which axis carries the 2D annotation: the one
+    with extent 1 throughout.
     """
     if not extents:
         return
@@ -110,11 +109,6 @@ def report_geometry(extents, pha_range):
               f"max {col.max():3d}{flag}")
     if not (arr == 1).all(axis=0).any():
         print("  note: no axis is uniformly 1, so the annotation is not purely 2D")
-    if pha_range:
-        lo = min(r[0] for r in pha_range); hi = max(r[1] for r in pha_range)
-        inside = -np.pi - 1e-3 <= lo and hi <= np.pi + 1e-3
-        print(f"unwrapped phase range across subjects: [{lo:.3f}, {hi:.3f}]"
-              + ("" if inside else "  <- extends beyond [-pi, pi]"))
 
 
 def save_patches(xs, out_dir, subj_id, kind):
@@ -132,21 +126,20 @@ def prepare_positive(args, dirs, rng):
                    if s not in args.exclude_ids]
     subject_ids, skipped = preflight(args.pos_root, subject_ids, True, args)
     total = 0
-    extents, pha_range = [], []
+    extents = []
     for subj_id in tqdm(subject_ids, desc="pos subjects"):
         if not args.overwrite and already_done(dirs["pos"], subj_id, "pos"):
             continue
         pha_fpath, mag_fpath, prl_fpath, _, _ = get_fpaths(args.pos_root, subj_id, pos=True)
-        pha = load_ras(pha_fpath)
-        mag = load_mag(mag_fpath)
+        pha = load_norm(pha_fpath)
+        mag = load_norm(mag_fpath)
         prl = load_ras(prl_fpath)
-        pha_range.append((float(pha.min()), float(pha.max())))
 
         xs_pos, ext = get_pos_patches(mag, pha, prl, args.patch_size,
                                       return_extents=True)
         extents += ext
         total += save_patches(xs_pos, dirs["pos"], subj_id, "pos")
-    report_geometry(extents, pha_range)
+    report_geometry(extents)
     return len(subject_ids), total, skipped
 
 
@@ -162,8 +155,8 @@ def prepare_negative(args, dirs, rng):
             continue
         pha_fpath, mag_fpath, _, brainmask_fpath, aultra_fpath = get_fpaths(
             args.neg_root, subj_id, pos=False)
-        pha = load_ras(pha_fpath)
-        mag = load_mag(mag_fpath)
+        pha = load_norm(pha_fpath)
+        mag = load_norm(mag_fpath)
         seg = load_ras(aultra_fpath)
         seg[seg != 0] = 1
         brainmask = load_ras(brainmask_fpath)

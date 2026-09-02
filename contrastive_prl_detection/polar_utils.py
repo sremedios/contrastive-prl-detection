@@ -101,11 +101,14 @@ def circular_colorbar(ax, anchors_deg=ANCHORS_DEG,
     ax.spines["polar"].set_visible(False)
     return ax
 
-def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG,
-                    rng=None, show=True, savepath=None, close=True):
-    """Side-by-side: raw encoder output in R^2, and the same points on S^1."""
+def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, rng=None, title=None,
+                    show=True, savepath=None, close=True):
+    """Side-by-side: raw encoder output in R^2, and the same points on S^1.
+
+    Constrained layout, not tight_layout, so `title` clears the axes titles.
+    """
     rng = np.random.default_rng(0) if rng is None else rng
-    fig, axes = plt.subplots(1, 2, figsize=(13.5, 6.2))
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 6.2), constrained_layout=True)
     anchors_rad = np.radians(anchors_deg)
     bisectors   = np.radians(BISECTORS_DEG)
 
@@ -150,7 +153,8 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG,
     ax.set_title("(b) after $z = u/\\|u\\|$: same angles, radius discarded\n"
                  "(radial jitter for visibility only)", fontsize=10)
 
-    fig.tight_layout()
+    if title:
+        fig.suptitle(title, fontsize=11)
     if savepath is not None:
         fig.savefig(savepath, dpi=150, bbox_inches="tight")
     if show:

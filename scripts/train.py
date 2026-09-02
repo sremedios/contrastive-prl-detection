@@ -32,7 +32,8 @@ from contrastive_prl_detection import contrastive as ct
 from contrastive_prl_detection.dataset import (TrainSet, subject_ids_in,
                                                worker_init_fn)
 from contrastive_prl_detection.net import resnet3d
-from contrastive_prl_detection.wandb_utils import Logger, make_probes
+from contrastive_prl_detection.wandb_utils import (Logger, embed_probe_patches,
+                                                   make_probes)
 
 DEFAULT_WIDTH = (16, 32, 64, 64, 64, 64, 64, 64)
 
@@ -92,6 +93,9 @@ def parse_args(argv=None):
                    help="slices per rendered theta-map")
     g.add_argument("--vol-dpi", type=int, default=200,
                    help="resolution of the rendered theta-map panels")
+    g.add_argument("--vol-patches", type=int, default=64,
+                   help="patches per class sampled from each withheld volume for "
+                        "the separability scatter (0 disables it)")
 
     p.add_argument("--ckpt-every", type=int, default=0,
                    help="also write an intermediate checkpoint every N steps")
@@ -168,12 +172,29 @@ def validate(model, val_loader, device, anchors_deg, step, plot_dir,
 
 
 def volume_payload(logger, probes, model, device, tau, anchors_deg, step):
-    """Render each withheld volume's theta-map. Returns the images to log."""
+    """Render each withheld volume's theta-map, plus the patch-wise scatter."""
+    from contrastive_prl_detection.polar_utils import plot_both_views
+
     payload = {}
     for probe in probes:
         fig = probe.render(model, device, tau, anchors_deg, step=step)
         payload[f"{probe.tag}/theta_slices"] = logger.image(
             fig, caption=f"step {step} - slices {probe.slices}")
+        plt.close(fig)
+
+    # Patch-wise separability on the same held-out volumes.
+    embedded = embed_probe_patches(probes, model, device)
+    if embedded is not None:
+        u, z, y, theta = embedded
+        acc, per_class = ct.accuracy_from_theta(theta, y, anchors_deg)
+        fig = plot_both_views(u, z, y, theta, anchors_deg=anchors_deg,
+                              title=f"withheld volumes, {len(y)} patches - step {step}",
+                              show=False, close=False)
+        payload["volume/patch_embedding"] = logger.image(fig, caption=f"step {step}")
+        payload["volume/patch_accuracy"] = acc
+        for name, a in zip(("positive", "neutral", "negative"), per_class):
+            if a == a:                                  # skip NaN for absent classes
+                payload[f"volume/patch_acc_{name}"] = a
         plt.close(fig)
     return payload
 
@@ -251,8 +272,11 @@ def main(argv=None):
                             for k, v in vars(args).items()})
     probes = []
     if args.wandb and (args.pos_root or args.neg_root):
+        side = 4 * len(args.width) + 1          # the encoder's receptive field
         probes = make_probes(args.pos_root, args.neg_root, withheld,
-                             n_slices=args.vol_slices, dpi=args.vol_dpi)
+                             n_slices=args.vol_slices, dpi=args.vol_dpi,
+                             n_patches=args.vol_patches,
+                             patch_size=(side, side, side))
         print(f"volume probes: {[pr.tag for pr in probes] or '(none)'}")
     elif args.wandb and args.vol_every:
         print("--vol-every needs --pos-root and/or --neg-root; skipping volume renders")

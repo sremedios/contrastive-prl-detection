@@ -26,7 +26,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from contrastive_prl_detection import contrastive as ct
-from contrastive_prl_detection.dataset import get_fpaths, load_mag, load_ras
+from contrastive_prl_detection.dataset import get_fpaths, load_norm, load_ras
 from contrastive_prl_detection.inference import (infer_volume, load_model,
                                                  pick_slices, save_nifti,
                                                  wrap_theta)
@@ -73,8 +73,8 @@ def main(argv=None):
 
     pha_fpath, mag_fpath, prl_fpath, _, aultra_fpath = get_fpaths(
         args.root, args.subject_id, pos=args.is_pos)
-    pha = load_ras(pha_fpath)
-    mag = load_mag(mag_fpath)
+    pha = load_norm(pha_fpath)
+    mag = load_norm(mag_fpath)
     prl = load_ras(prl_fpath) if args.is_pos else None
 
     theta, seg, probs = infer_volume(model, mag, pha, device, tau, anchors_deg,
