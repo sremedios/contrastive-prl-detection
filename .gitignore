@@ -219,3 +219,43 @@ __marimo__/
 
 # macOS
 .DS_Store
+
+# ---------------------------------------------------------------------------
+# Project data, weights, and run outputs
+# ---------------------------------------------------------------------------
+
+# Patches from scripts/prepare_data.py (--out-dir, default ./data)
+/data/
+*_patches/
+
+# Subject volumes. Nothing from the PRL dataset belongs in git.
+*.nii
+*.nii.gz
+*.mgz
+*.mgh
+*.img
+*.hdr
+*.dcm
+
+# Checkpoints from scripts/train.py (--out, default model.pt; --ckpt-every
+# also writes model.step<N>.pt). *.pt covers saved patches too.
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Inference outputs from scripts/test_volume.py (--out-dir, default ./results)
+/results/
+
+# Figures from scripts/train.py --val-plot-dir and test_volume.py
+embedding_step*.png
+theta_slices.png
+/plots/
+/figures/
+
+# Training logs and experiment trackers
+/runs/
+/logs/
+wandb/
+lightning_logs/
+*.log
