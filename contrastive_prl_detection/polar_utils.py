@@ -65,9 +65,9 @@ def cyclic3(c1, c2, c3, angles=(90, 210, 330), N=256, smooth=5, name="cyclic3"):
     return ListedColormap(rgb, name=name)
 
 
-#: Default theta colormap: red at the positive anchor, black at neutral, blue at
+#: Default theta colormap: yellow at the positive anchor, black at neutral, blue at
 #: negative.  Built once at import so plotting loops don't rebuild it.
-cmap = cyclic3("#86101E", "#000000", "#4C8FD4")
+cmap = cyclic3("#FFFF47", "#000000", "#4C8FD4")
 
 
 
@@ -165,7 +165,7 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, rng=None, title=Non
 
 
 def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5, dpi=200,
-                      title=None, overlay_color="#ffd400", overlay_lw=1.0,
+                      title=None, overlay_color="#4fff58", overlay_lw=1.0,
                       show=True, savepath=None, close=True):
     """Grid of axial theta-map slices, optionally outlining a lesion mask.
 
