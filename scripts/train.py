@@ -308,7 +308,10 @@ def main(argv=None):
         z = ct.project(u, dim=1)                           # onto S^1
         logits = ct.logits(z, anchors, tau=args.tau, dim=1)  # (3n, 3)
 
-        loss = F.cross_entropy(logits, y)
+        # Also regularize u to have approx. unit radius so net doesn't explode
+        sq = u.pow(2).sum(dim=1)                    # (3n,)
+        radial = (sq - 1).pow(2).mean()
+        loss = F.cross_entropy(logits, y) + 0.1 * radial
 
         opt.zero_grad()
         loss.backward()
