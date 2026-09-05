@@ -66,6 +66,40 @@ def missing_roles(root, subj_id, pos=True):
     return {r: FILE_PATTERNS[r] for r in roles if found[r] is None}
 
 
+def grid_roles(pos=True):
+    """Roles whose volumes are read together, and so must lie on the same grid.
+
+    The brain mask and the `reg_separation` lesion mask are only read for the
+    negative cohort, and the rim segmentation only for the positive one, so a
+    subject is not rejected over a volume its cohort never touches.
+    """
+    return ("pha", "mag", "prl") if pos else ("pha", "mag", "brainmask", "aultra")
+
+
+def volume_shapes(root, subj_id, pos=True):
+    """{role: (path, shape)} for the volumes read together, from the headers only.
+
+    `nib.load` is lazy, so this costs one header read per file and no voxel data.
+    """
+    found = find_fpaths(root, subj_id, pos=pos)
+    return {r: (found[r], nib.load(found[r]).shape) for r in grid_roles(pos)}
+
+
+def mismatched_shapes(root, subj_id, pos=True):
+    """{role: (path, shape)} when the volumes disagree, else an empty dict.
+
+    Patch sampling combines these volumes voxel-wise -- `empty & brain` in
+    `get_neu_patches`, say -- so a subject whose volumes sit on different grids
+    used to die mid-run as an opaque broadcast RuntimeError. Because roles are
+    matched by filename substring, the usual cause is a subject holding a second
+    file that matches the same pattern in another space, so the offending
+    filename is reported alongside the shape.
+    """
+    shapes = volume_shapes(root, subj_id, pos=pos)
+    dims = {s for _, s in shapes.values()}
+    return {} if len(dims) == 1 and len(next(iter(dims))) == 3 else shapes
+
+
 def get_fpaths(root, subj_id, pos=True):
     """(pha, mag, prl, brainmask, aultra) paths; `prl` is None when `pos=False`.
 

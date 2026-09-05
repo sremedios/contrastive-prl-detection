@@ -4,8 +4,8 @@
 Positives come from the rim-lesion segmentation of the PRL-positive cohort (one
 patch per connected component).  Negatives and neutrals come from the
 PRL-negative cohort: negatives are centred on lesion voxels of the `reg_separation`
-mask, neutrals on voxels whose whole patch is lesion-free (mostly inside the
-brain mask, `--frac-brain` of them, the rest outside).
+mask, neutrals on voxels whose whole patch is lesion-free and whose centre is inside
+the brain mask.
 
 Each patch is saved as a `(2, *patch_size)` float32 tensor `[magnitude, phase]`
 named `{subject_id}-{kind}_patch_{index:04d}.pt`, so the split by subject can be
@@ -29,10 +29,10 @@ from tqdm.auto import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contrastive_prl_detection.dataset import (IncompleteSubject, get_fpaths,
-                                               list_subject_ids, load_norm,
-                                               load_ras, missing_roles,
-                                               patch_fname)
+from contrastive_prl_detection.dataset import (get_fpaths, list_subject_ids,
+                                               load_norm, load_ras,
+                                               mismatched_shapes,
+                                               missing_roles, patch_fname)
 from contrastive_prl_detection.patch_utils import (get_neg_patches,
                                                    get_neu_patches,
                                                    get_pos_patches)
@@ -53,12 +53,11 @@ def parse_args(argv=None):
                    help="negative patches sampled per negative subject")
     p.add_argument("--n-neu", type=int, default=50,
                    help="neutral patches sampled per negative subject")
-    p.add_argument("--frac-brain", type=float, default=0.95,
-                   help="fraction of neutral patches drawn from inside the brain mask")
     p.add_argument("--exclude-ids", nargs="*", default=[],
                    help="subject ids to skip entirely")
     p.add_argument("--on-incomplete", choices=("skip", "fail"), default="skip",
-                   help="what to do with a subject missing an expected volume "
+                   help="what to do with an unusable subject -- one missing an "
+                        "expected volume, or one whose volumes disagree on shape "
                         "(default: report it and carry on)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--overwrite", action="store_true",
@@ -66,24 +65,36 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def preflight(root, subject_ids, pos, args):
-    """Split subjects into usable and incomplete before any volume is loaded.
+def subject_problem(root, subj_id, pos):
+    """Why `subj_id` cannot be used, as one line, or None when it is fine."""
+    missing = missing_roles(root, subj_id, pos=pos)
+    if missing:
+        return "no " + ", ".join(f"{r} (*{pat}*)" for r, pat in missing.items())
+    bad = mismatched_shapes(root, subj_id, pos=pos)
+    if bad:
+        return "volumes on different grids: " + ", ".join(
+            f"{r} {tuple(shape)} ({fpath.name})" for r, (fpath, shape) in bad.items())
+    return None
 
-    A missing volume used to surface as an IndexError partway through the run,
-    after minutes of work, so the check happens up front instead.
+
+def preflight(root, subject_ids, pos, args):
+    """Split subjects into usable and unusable before any volume is loaded.
+
+    Two ways a subject used to break the run minutes in: a missing volume, which
+    surfaced as an IndexError, and volumes on different grids, which surfaced as
+    a broadcast RuntimeError inside patch sampling. Both are decided up front,
+    from the file listing and the NIfTI headers, so no voxel data is read here.
     """
     ok, bad = [], {}
     for subj_id in subject_ids:
-        missing = missing_roles(root, subj_id, pos=pos)
-        (ok.append(subj_id) if not missing else bad.update({subj_id: missing}))
+        problem = subject_problem(root, subj_id, pos)
+        (ok.append(subj_id) if problem is None else bad.update({subj_id: problem}))
 
     if bad:
         label = "positive" if pos else "negative"
-        print(f"\n{len(bad)} of {len(subject_ids)} {label} subjects are missing "
-              f"expected volumes:")
-        for subj_id, missing in bad.items():
-            wanted = ", ".join(f"{r} (*{pat}*)" for r, pat in missing.items())
-            print(f"  {subj_id}: no {wanted}")
+        print(f"\n{len(bad)} of {len(subject_ids)} {label} subjects are unusable:")
+        for subj_id, problem in bad.items():
+            print(f"  {subj_id}: {problem}")
         if args.on_incomplete == "fail":
             raise SystemExit("aborting (--on-incomplete fail). Pass --exclude-ids "
                              "to drop them, or --on-incomplete skip to continue.")
@@ -163,7 +174,7 @@ def prepare_negative(args, dirs, rng):
 
         xs_neg = get_neg_patches(mag, pha, seg, args.patch_size, n=args.n_neg, rng=rng)
         xs_neu = get_neu_patches(mag, pha, seg, brainmask, args.patch_size,
-                                 n=args.n_neu, frac_brain=args.frac_brain, rng=rng)
+                                 n=args.n_neu, rng=rng)
 
         n_neg += save_patches(xs_neg, dirs["neg"], subj_id, "neg")
         n_neu += save_patches(xs_neu, dirs["neu"], subj_id, "neu")
@@ -191,7 +202,7 @@ def main(argv=None):
 
     skipped = {**skip_pos, **skip_neg}
     if skipped:
-        print(f"\nskipped {len(skipped)} incomplete subject(s): "
+        print(f"\nskipped {len(skipped)} unusable subject(s): "
               f"{', '.join(sorted(skipped))}")
 
 

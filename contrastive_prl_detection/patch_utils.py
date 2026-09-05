@@ -49,17 +49,20 @@ def get_neg_patches(mag, pha, seg, patch_size, n, rng=None):
     centers = sample_centers(seg > 0.5, patch_size, n, rng)
     return get_patches(mag, pha, centers, patch_size)
 
-def get_neu_patches(mag, pha, seg, brainmask, patch_size, n, frac_brain=0.95, rng=None):
-    rng = rng or np.random.default_rng()
+def get_neu_patches(mag, pha, seg, brainmask, patch_size, n, rng=None):
+    """Lesion-free patches, every centre inside the brain mask.
+
+    Centres used to come 95% from inside the mask and the rest from outside it,
+    to show the encoder some air. The mask is present for every subject, so
+    whatever the encoder does outside it is discarded downstream and never
+    read; those patches only spent capacity on background, and are dropped.
+    """
+    if seg.shape != brainmask.shape:
+        raise ValueError(f"segmentation {tuple(seg.shape)} and brain mask "
+                         f"{tuple(brainmask.shape)} are on different grids")
     # Centers whose patch contains no seg voxel at all
     empty = torch.from_numpy(ndimage.maximum_filter(np.asarray(seg > 0.5), size=patch_size) == 0)
-    brain = brainmask > 0.5
-
-    n_bg = int(round(n * (1 - frac_brain)))
-    n_brain = n - n_bg
-
-    centers = sample_centers(empty & brain, patch_size, n_brain, rng)
-    centers += sample_centers(empty & ~brain, patch_size, n_bg, rng)
+    centers = sample_centers(empty & (brainmask > 0.5), patch_size, n, rng)
     return get_patches(mag, pha, centers, patch_size)
 
 def get_pos_patches(mag, pha, prl, patch_size, return_extents=False):
