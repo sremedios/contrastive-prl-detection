@@ -151,7 +151,7 @@ def check_patch_fits_encoder(model, sample, device, width):
     return out.shape[1]
 
 
-def validate(model, val_loader, device, anchors_deg, step, plot_dir,
+def validate(model, val_loader, device, anchors_deg, tau, step, plot_dir,
              show_plot=False):
     u, z, y, theta = ct.embed(model, val_loader, device)
     acc, per_class = ct.accuracy_from_theta(theta, y, anchors_deg)
@@ -162,7 +162,7 @@ def validate(model, val_loader, device, anchors_deg, step, plot_dir,
     if plot_dir is not None:
         plot_dir.mkdir(parents=True, exist_ok=True)
         savepath = plot_dir / f"embedding_step{step:07d}.png"
-    fig = plot_both_views(u, z, y, theta, anchors_deg=anchors_deg,
+    fig = plot_both_views(u, z, y, theta, anchors_deg=anchors_deg, tau=tau,
                           show=show_plot, savepath=savepath, close=False)
 
     named = ", ".join(f"{n}={a:.3f}" for n, a in zip(ct.CLASS_NAMES, per_class))
@@ -188,7 +188,7 @@ def volume_payload(logger, probes, model, device, tau, anchors_deg, step):
     if embedded is not None:
         u, z, y, theta = embedded
         acc, per_class = ct.accuracy_from_theta(theta, y, anchors_deg)
-        fig = plot_both_views(u, z, y, theta, anchors_deg=anchors_deg,
+        fig = plot_both_views(u, z, y, theta, anchors_deg=anchors_deg, tau=tau,
                               title=f"withheld volumes, {len(y)} patches - step {step}",
                               show=False, close=False)
         payload["volume/patch_embedding"] = logger.image(fig, caption=f"step {step}")
@@ -309,7 +309,6 @@ def main(argv=None):
         z = ct.project(u, dim=1)                           # onto S^1
         logits = ct.logits(z, anchors, tau=args.tau, dim=1)  # (3n, 3)
 
-        # Also regularize u to have approx. unit radius so net doesn't explode
         sq = u.pow(2).sum(dim=1)                    # (3n,)
         radial = (sq - 1).pow(2).mean()
         loss = F.cross_entropy(logits, y) + 0.1 * radial
@@ -327,11 +326,17 @@ def main(argv=None):
         # desynchronises the images from the loss curve.
         payload = {}
         if args.log_every and step % args.log_every == 0:
-            payload |= {"train/loss": last_loss}
+            # The radius is logged too: it is what the penalty acts on, and the
+            # only way to see whether the encoder is using the disc or the rim.
+            payload |= {"train/loss": last_loss,
+                        "train/cross_entropy": ce.item(),
+                        "train/norm_penalty": pen.item(),
+                        "train/u_norm": u.detach().norm(dim=1).mean().item()}
 
         if val_loader is not None and args.val_every and step % args.val_every == 0:
             val_acc, per_class, fig = validate(model, val_loader, device,
-                                               ct.ANCHORS_DEG, step, args.val_plot_dir,
+                                               ct.ANCHORS_DEG, args.tau, step,
+                                               args.val_plot_dir,
                                                show_plot=args.val_plot_dir is None
                                                          and not args.wandb)
             payload |= val_payload(logger, val_acc, per_class, fig, step)
@@ -354,7 +359,7 @@ def main(argv=None):
     final = {}
     if val_loader is not None and not (args.val_every and step % args.val_every == 0):
         val_acc, per_class, fig = validate(model, val_loader, device, ct.ANCHORS_DEG,
-                                           step, args.val_plot_dir,
+                                           args.tau, step, args.val_plot_dir,
                                            show_plot=args.val_plot_dir is None
                                                      and not args.wandb)
         final |= val_payload(logger, val_acc, per_class, fig, step)

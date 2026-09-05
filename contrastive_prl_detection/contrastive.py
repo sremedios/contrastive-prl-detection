@@ -44,6 +44,27 @@ def logits(z, anchors, tau=TAU, dim=1):
     return torch.movedim(sim, -1, dim) / tau
 
 
+#: Weight on the unit-norm penalty added to the cross-entropy. See `norm_penalty`.
+LAMBDA_NORM = 0.1
+
+
+def norm_penalty(u, dim=1):
+    """Mean squared deviation of ||u|| from 1, pulling the raw output onto S^1.
+
+    Cross-entropy alone says nothing about the radius: the Jacobian of `project`
+    is orthogonal to u, so no gradient ever reaches ||u||, which is then left to
+    drift on initialisation and weight decay alone. This penalty is the only
+    term that sets it.
+
+    Bounding the radius changes what the disc is used for. Unpenalised, the
+    encoder parks patches far out where the radius carries nothing; held near 1,
+    it starts using the interior, and ||u|| becomes a margin worth reading --
+    patches the model is unsure of sit in toward the origin instead of at an
+    arbitrary large radius. `plot_both_views` panel (a) is where that shows up.
+    """
+    return (u.norm(dim=dim) - 1).pow(2).mean()
+
+
 def theta(z, dim=1):
     """Angle of each 2-vector on axis `dim`, in (-pi, pi]."""
     zx, zy = z.unbind(dim)
