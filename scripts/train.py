@@ -310,8 +310,9 @@ def main(argv=None):
         logits = ct.logits(z, anchors, tau=args.tau, dim=1)  # (3n, 3)
 
         sq = u.pow(2).sum(dim=1)                    # (3n,)
-        radial = (sq - 1).pow(2).mean()
-        loss = F.cross_entropy(logits, y) + 0.1 * radial
+        ce = F.cross_entropy(logits, y)
+        pen = (sq - 1).pow(2).mean()
+        loss = ce + 0.1 * pen
 
         opt.zero_grad()
         loss.backward()
