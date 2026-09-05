@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, to_rgb
 
 from .contrastive import (ANCHORS_DEG, BISECTORS_DEG, CLASS_COLORS,
-                          CLASS_NAMES)
+                          CLASS_NAMES, TAU)
 
 _M = np.array([[0.4124564, 0.3575761, 0.1804375],
                [0.2126729, 0.7151522, 0.0721750],
@@ -101,9 +101,28 @@ def circular_colorbar(ax, anchors_deg=ANCHORS_DEG,
     ax.spines["polar"].set_visible(False)
     return ax
 
-def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, rng=None, title=None,
-                    show=True, savepath=None, close=True):
+def class_posterior(th, anchors_rad, tau=TAU):
+    """`p(class | theta)` on a grid of angles: the softmax the loss actually uses.
+
+    A von Mises mixture with concentration 1/tau and the anchors as its means,
+    which is what `logits` + softmax comes to once the radius is projected out.
+    Pure geometry -- no model involved -- so a plot can show what a given tau
+    asserts about the circle.
+    """
+    sim = np.cos(np.asarray(th)[:, None] - np.asarray(anchors_rad)[None, :]) / tau
+    e = np.exp(sim - sim.max(1, keepdims=True))
+    return e / e.sum(1, keepdims=True)
+
+
+def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, tau=TAU, rng=None,
+                    title=None, show=True, savepath=None, close=True):
     """Side-by-side: raw encoder output in R^2, and the same points on S^1.
+
+    Both panels carry what `tau` does, since it is invisible in the points
+    themselves -- it scales no coordinate and, being a positive scalar, does not
+    move the argmax boundaries either. Panel (a) marks the radius at which an
+    unprojected model would be as confident as tau makes the projected one;
+    panel (b) draws the posterior tau implies as a lobe per class.
 
     Constrained layout, not tight_layout, so `title` clears the axes titles.
     """
@@ -111,16 +130,33 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, rng=None, title=Non
     fig, axes = plt.subplots(1, 2, figsize=(13.5, 6.2), constrained_layout=True)
     anchors_rad = np.radians(anchors_deg)
     bisectors   = np.radians(BISECTORS_DEG)
+    circ = np.linspace(0, 2 * np.pi, 721)
 
     # ---- (a) raw encoder output in R^2 ----
     ax = axes[0]
-    lim = np.percentile(np.linalg.norm(u, axis=1), 99) * 1.15
+    # S^1 is always in frame: it is what `project` maps onto and what
+    # `norm_penalty` pulls towards, so the radius is only readable against it.
+    lim = max(np.percentile(np.linalg.norm(u, axis=1), 99), 1.0) * 1.15
     for b in bisectors:                                  # decision boundaries
         ax.plot([0, lim * 1.5 * np.cos(b)], [0, lim * 1.5 * np.sin(b)],
                 ls=":", lw=1.0, c="#999999", zorder=0)
     for c, a in enumerate(anchors_rad):                  # anchor directions
         ax.plot([0, lim * 1.5 * np.cos(a)], [0, lim * 1.5 * np.sin(a)],
                 ls="--", lw=1.0, c=CLASS_COLORS[c], alpha=0.55, zorder=0)
+    ax.plot(np.cos(circ), np.sin(circ), ls="--", lw=1.1, c="#555555", zorder=1,
+            label="$\\|u\\|=1$")
+    # Drop `project` and the logits are <u, a_c> = ||u|| cos(theta - alpha_c), so
+    # ||u|| is a per-sample inverse temperature. Normalising replaces it with a
+    # single global 1/tau; this circle is the radius at which the two agree, and
+    # the gap to the scatter is how much confidence the projection is discarding.
+    r_tau = 1.0 / tau
+    if r_tau <= lim:
+        ax.plot(r_tau * np.cos(circ), r_tau * np.sin(circ), ls=":", lw=1.3,
+                c="#c1121f", zorder=1, label=f"$\\|u\\|=1/\\tau$ = {r_tau:.1f}")
+    else:
+        ax.text(0.03, 0.03, f"$\\|u\\|=1/\\tau$ = {r_tau:.1f}, off scale "
+                            f"({r_tau / lim:.1f}$\\times$)",
+                transform=ax.transAxes, fontsize=8, color="#c1121f")
     for c in range(3):
         m = y == c
         ax.scatter(u[m, 0], u[m, 1], s=9, c=CLASS_COLORS[c],
@@ -129,29 +165,47 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, rng=None, title=Non
     ax.set_aspect("equal"); ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim)
     ax.set_xlabel("$u_1$"); ax.set_ylabel("$u_2$")
     ax.set_title("(a) raw encoder output $u \\in \\mathbb{R}^2$\n"
-                 "dashed = anchor directions, dotted = decision boundaries",
-                 fontsize=10)
+                 f"median $\\|u\\|$ = {np.median(np.linalg.norm(u, axis=1)):.2f}; "
+                 "dashed = anchors, dotted = boundaries", fontsize=10)
     ax.legend(fontsize=8, loc="upper right", framealpha=0.9)
 
     # ---- (b) same points, radially projected onto S^1 ----
     ax = axes[1]
-    circ = np.linspace(0, 2 * np.pi, 400)
     ax.plot(np.cos(circ), np.sin(circ), color="#cccccc", lw=1, zorder=0)
     for b in bisectors:
         ax.plot([0, 1.35 * np.cos(b)], [0, 1.35 * np.sin(b)],
                 ls=":", lw=1.0, c="#bbbbbb", zorder=0)
+
+    # The posterior tau implies, drawn outward from S^1 as one lobe per class:
+    # lobe width is the angular spread tau asserts, and where neighbouring lobes
+    # cross is the band in which the model cannot be confident whatever it learns.
+    post = class_posterior(circ, anchors_rad, tau)
+    lobe = 0.30
+    ax.plot((1 + lobe) * np.cos(circ), (1 + lobe) * np.sin(circ),
+            ls=":", lw=0.8, c="#cccccc", zorder=0)         # p = 1 reference
+    for c in range(3):
+        r = 1 + lobe * post[:, c]
+        ax.fill(np.r_[r * np.cos(circ), np.cos(circ[::-1])],
+                np.r_[r * np.sin(circ), np.sin(circ[::-1])],
+                color=CLASS_COLORS[c], alpha=0.13, lw=0, zorder=1)
+        ax.plot(r * np.cos(circ), r * np.sin(circ), c=CLASS_COLORS[c], lw=1.2,
+                alpha=0.9, zorder=2)
+
     jitter = 1 + 0.045 * rng.standard_normal(len(theta))   # viz only
     for c in range(3):
         m = y == c
         ax.scatter(jitter[m] * np.cos(theta[m]), jitter[m] * np.sin(theta[m]),
-                   s=9, c=CLASS_COLORS[c], alpha=0.7, linewidths=0)
+                   s=9, c=CLASS_COLORS[c], alpha=0.7, linewidths=0, zorder=3)
     for c, a in enumerate(anchors_rad):
         ax.scatter(np.cos(a), np.sin(a), s=190, marker="*", c=CLASS_COLORS[c],
                    edgecolors="k", linewidths=0.9, zorder=5)
     ax.set_aspect("equal"); ax.set_xlim(-1.5, 1.5); ax.set_ylim(-1.5, 1.5)
     ax.set_xticks([]); ax.set_yticks([])
+    p_max = post.max()
     ax.set_title("(b) after $z = u/\\|u\\|$: same angles, radius discarded\n"
-                 "(radial jitter for visibility only)", fontsize=10)
+                 f"lobes = $p(c\\,|\\,\\theta)$ at $\\tau$={tau:g}  "
+                 f"(max $p$ {p_max:.3f}, CE floor {-np.log(p_max):.3f})",
+                 fontsize=10)
 
     if title:
         fig.suptitle(title, fontsize=11)
