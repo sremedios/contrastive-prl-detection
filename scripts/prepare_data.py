@@ -123,8 +123,16 @@ def report_geometry(extents):
 
 
 def save_patches(xs, out_dir, subj_id, kind):
+    """Write each patch of a stacked `(N, 2, *patch_size)` tensor to its own file.
+
+    `.clone()`, not `.contiguous()`: `xs[i]` is a view into the stacked tensor
+    and a slice along dim 0 is already contiguous, so `.contiguous()` returns
+    the same object and `torch.save` writes the whole underlying storage -- all
+    N patches -- into every file. That inflates the set by a factor of N and
+    makes each `torch.load` at training time read N patches to use one.
+    """
     for i, x in enumerate(xs):
-        torch.save(x.contiguous(), out_dir / patch_fname(subj_id, kind, i))
+        torch.save(x.clone(), out_dir / patch_fname(subj_id, kind, i))
     return len(xs)
 
 
