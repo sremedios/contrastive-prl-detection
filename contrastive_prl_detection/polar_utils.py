@@ -164,8 +164,8 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, rng=None, title=Non
     return fig
 
 
-def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5, dpi=200,
-                      title=None, overlay_color="#4fff58", overlay_lw=1.0,
+def plot_theta_slices(y_hat, slices, overlay=None, mask=None, ncols=4, figscale=5,
+                      dpi=200, title=None, overlay_color="#4fff58", overlay_lw=1.0,
                       show=True, savepath=None, close=True):
     """Grid of axial theta-map slices, optionally outlining a lesion mask.
 
@@ -173,6 +173,13 @@ def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5, dpi=200,
     axis, matching the orientation `dataset.load_ras` produces. The overlay is
     drawn as a contour rather than a translucent fill, so the theta values it
     marks stay readable underneath it.
+
+    `mask` restricts the view to one region -- the brain mask, or a lesion mask
+    -- by leaving everything outside it blank. Blank, not zeroed: 0 rad is a
+    real angle sitting in the negative sector, between the 330 deg anchor and
+    the 30 deg bisector, so a zeroed background would read as a confident
+    whole-volume negative. The masked voxels expose a white axes instead, a
+    colour the cyclic map never produces.
 
     Constrained layout, not tight_layout: it accounts for `suptitle`, which
     tight_layout overlaps with the top row.
@@ -187,8 +194,11 @@ def plot_theta_slices(y_hat, slices, overlay=None, ncols=4, figscale=5, dpi=200,
                             dpi=dpi, constrained_layout=True)
 
     for ax, sl_idx in zip(axs.flat, slices):
-        ax.imshow(y_hat[..., sl_idx].T, cmap=cmap, vmin=0, vmax=2 * np.pi,
-                  interpolation="nearest")
+        img = y_hat[..., sl_idx].T
+        if mask is not None:
+            img = np.ma.masked_where(np.asarray(mask[..., sl_idx]).T <= 0.5, img)
+            ax.set_facecolor("white")
+        ax.imshow(img, cmap=cmap, vmin=0, vmax=2 * np.pi, interpolation="nearest")
         if overlay is not None:
             m = np.asarray(overlay[..., sl_idx]).T
             if (m > 0.5).any():   # contour warns on an all-empty slice

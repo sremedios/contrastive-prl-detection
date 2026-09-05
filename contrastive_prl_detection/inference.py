@@ -72,10 +72,16 @@ def wrap_theta(theta):
     return t.detach().cpu().numpy() if torch.is_tensor(t) else t
 
 
-def pick_slices(prl, mag, n, is_pos):
-    """Slice indices for the figure: spread over the rim lesions when there are any."""
-    if is_pos and prl is not None and (np.asarray(prl) > 0.5).any():
-        labels, _ = ndimage.label(np.asarray(prl) > 0.5,
+def pick_slices(lesions, mag, n):
+    """Slice indices for the figure: spread over `lesions` when there are any.
+
+    Whichever lesion mask the caller cares about -- the rim segmentation for a
+    positive subject, `reg_separation` for a negative one -- so that a figure
+    masked to that mask lands on slices where it has something to show. Falls
+    back to a spread through the middle of the volume when the mask is empty.
+    """
+    if lesions is not None and (np.asarray(lesions) > 0.5).any():
+        labels, _ = ndimage.label(np.asarray(lesions) > 0.5,
                                   structure=ndimage.generate_binary_structure(3, 3))
         starts = sorted({s[2].start for s in ndimage.find_objects(labels)})
         if starts:

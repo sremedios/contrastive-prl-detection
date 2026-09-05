@@ -110,7 +110,7 @@ def main(argv=None):
     if not args.no_figure:
         from contrastive_prl_detection.polar_utils import plot_theta_slices
         slices = args.slices or pick_slices(
-            None if prl is None else prl.numpy(), mag, args.n_slices, args.is_pos)
+            None if prl is None else prl.numpy(), mag, args.n_slices)
         overlay = prl.numpy() if args.is_pos and prl is not None else None
         fig_path = args.out_dir / "theta_slices.png"
         plot_theta_slices(y_hat, slices, overlay=overlay,

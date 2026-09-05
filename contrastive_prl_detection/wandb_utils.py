@@ -78,9 +78,37 @@ class VolumeProbe:
         self.pha = load_norm(pha_fpath)
         self.mag = load_norm(mag_fpath)
         self.prl = load_ras(prl_fpath).numpy() if is_pos else None
-        self.slices = pick_slices(self.prl, self.mag, n_slices, is_pos)
+        self.masks = self._load_masks(brainmask_fpath, aultra_fpath)
+        # Positives spread over the rim lesions, negatives over `reg_separation`:
+        # either way the slices are ones the lesion-masked panel can show.
+        self.slices = pick_slices(self.prl if is_pos else self.masks.get("lesion"),
+                                  self.mag, n_slices)
         self.patches = self._sample_patches(brainmask_fpath, aultra_fpath,
                                             n_patches, patch_size, seed)
+
+    def _load_masks(self, brainmask_fpath, aultra_fpath):
+        """Regions the theta-map is additionally rendered inside, by panel suffix.
+
+        Both cohorts get both panels: the brain mask bounds where the encoder's
+        output is ever read, and the `reg_separation` lesion mask narrows it to
+        the tissue a rim is looked for in.
+
+        `reg_separation` is categorical -- each lesion carries its own integer
+        label -- so the panel takes their union, every nonzero voxel, the same
+        reduction `prepare_data` and `test_volume --mask` apply to it. The BET
+        mask is already binary. Held as bool, since they only ever gate a plot,
+        and they stay resident for the whole run.
+        """
+        out = {}
+        for suffix, fpath, binarize in (("brain", brainmask_fpath, lambda v: v > 0.5),
+                                        ("lesion", aultra_fpath, lambda v: v != 0)):
+            m = binarize(load_ras(fpath).numpy())
+            if m.shape != tuple(self.mag.shape):
+                print(f"volume probe {self.tag}: {suffix} mask {m.shape} is not on "
+                      f"the volume's grid {tuple(self.mag.shape)}; skipping that panel")
+                continue
+            out[suffix] = m
+        return out
 
     def _sample_patches(self, brainmask_fpath, aultra_fpath, n, patch_size, seed):
         """Cut a fixed patch sample from this volume, by class index.
@@ -113,7 +141,13 @@ class VolumeProbe:
 
     def render(self, model, device, tau=ct.TAU, anchors_deg=ct.ANCHORS_DEG,
                step=None):
-        """Returns the theta-map figure. The caller closes it."""
+        """Returns {panel key: figure} for this volume. The caller closes them.
+
+        The whole volume, then the same theta-map restricted to each mask. One
+        sweep feeds all three: the panels differ only in which voxels are drawn,
+        so re-inferring per mask would multiply the GPU work for identical
+        numbers. Same slices throughout, so the panels stay comparable.
+        """
         from .polar_utils import plot_theta_slices
 
         theta, _, _ = infer_volume(model, self.mag, self.pha, device, tau,
@@ -123,13 +157,18 @@ class VolumeProbe:
         title = f"{self.subj_id} ({self.cohort}, withheld)"
         if step is not None:
             title += f" - step {step}"
-        fig = plot_theta_slices(y_hat, self.slices, overlay=self.prl, dpi=self.dpi,
-                                title=title, show=False, close=False)
+        panels = {"theta_slices": (None, title)}
+        for suffix, m in self.masks.items():
+            panels[f"theta_slices_{suffix}"] = (m, f"{title} - inside {suffix} mask")
+
+        figs = {key: plot_theta_slices(y_hat, self.slices, overlay=self.prl, mask=m,
+                                       dpi=self.dpi, title=t, show=False, close=False)
+                for key, (m, t) in panels.items()}
 
         del theta, y_hat
         if device.type == "cuda":
             torch.cuda.empty_cache()
-        return fig
+        return figs
 
 
 @torch.no_grad()

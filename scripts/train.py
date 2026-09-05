@@ -172,15 +172,16 @@ def validate(model, val_loader, device, anchors_deg, step, plot_dir,
 
 
 def volume_payload(logger, probes, model, device, tau, anchors_deg, step):
-    """Render each withheld volume's theta-map, plus the patch-wise scatter."""
+    """Render each withheld volume's theta-map panels, plus the patch-wise scatter."""
     from contrastive_prl_detection.polar_utils import plot_both_views
 
     payload = {}
     for probe in probes:
-        fig = probe.render(model, device, tau, anchors_deg, step=step)
-        payload[f"{probe.tag}/theta_slices"] = logger.image(
-            fig, caption=f"step {step} - slices {probe.slices}")
-        plt.close(fig)
+        # One panel over the whole volume, one per mask the probe could load.
+        for key, fig in probe.render(model, device, tau, anchors_deg, step=step).items():
+            payload[f"{probe.tag}/{key}"] = logger.image(
+                fig, caption=f"step {step} - slices {probe.slices}")
+            plt.close(fig)
 
     # Patch-wise separability on the same held-out volumes.
     embedded = embed_probe_patches(probes, model, device)
