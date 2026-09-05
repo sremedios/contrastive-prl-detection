@@ -91,12 +91,18 @@ class VolumeProbe:
 
         Both cohorts get both panels: the brain mask bounds where the encoder's
         output is ever read, and the `reg_separation` lesion mask narrows it to
-        the tissue a rim is looked for in. Held as bool, since they only ever
-        gate a plot, and they stay resident for the whole run.
+        the tissue a rim is looked for in.
+
+        `reg_separation` is categorical -- each lesion carries its own integer
+        label -- so the panel takes their union, every nonzero voxel, the same
+        reduction `prepare_data` and `test_volume --mask` apply to it. The BET
+        mask is already binary. Held as bool, since they only ever gate a plot,
+        and they stay resident for the whole run.
         """
         out = {}
-        for suffix, fpath in (("brain", brainmask_fpath), ("lesion", aultra_fpath)):
-            m = load_ras(fpath).numpy() > 0.5
+        for suffix, fpath, binarize in (("brain", brainmask_fpath, lambda v: v > 0.5),
+                                        ("lesion", aultra_fpath, lambda v: v != 0)):
+            m = binarize(load_ras(fpath).numpy())
             if m.shape != tuple(self.mag.shape):
                 print(f"volume probe {self.tag}: {suffix} mask {m.shape} is not on "
                       f"the volume's grid {tuple(self.mag.shape)}; skipping that panel")
