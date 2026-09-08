@@ -101,28 +101,15 @@ def circular_colorbar(ax, anchors_deg=ANCHORS_DEG,
     ax.spines["polar"].set_visible(False)
     return ax
 
-def class_posterior(th, anchors_rad, tau=TAU):
-    """`p(class | theta)` on a grid of angles: the softmax the loss actually uses.
-
-    A von Mises mixture with concentration 1/tau and the anchors as its means,
-    which is what `logits` + softmax comes to once the radius is projected out.
-    Pure geometry -- no model involved -- so a plot can show what a given tau
-    asserts about the circle.
-    """
-    sim = np.cos(np.asarray(th)[:, None] - np.asarray(anchors_rad)[None, :]) / tau
-    e = np.exp(sim - sim.max(1, keepdims=True))
-    return e / e.sum(1, keepdims=True)
-
 
 def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, tau=TAU, rng=None,
                     title=None, show=True, savepath=None, close=True):
     """Side-by-side: raw encoder output in R^2, and the same points on S^1.
 
-    Both panels carry what `tau` does, since it is invisible in the points
+    Panel (a) carries what `tau` does, since it is invisible in the points
     themselves -- it scales no coordinate and, being a positive scalar, does not
-    move the argmax boundaries either. Panel (a) marks the radius at which an
-    unprojected model would be as confident as tau makes the projected one;
-    panel (b) draws the posterior tau implies as a lobe per class.
+    move the argmax boundaries either: it marks the radius at which an
+    unprojected model would be as confident as tau makes the projected one.
 
     Constrained layout, not tight_layout, so `title` clears the axes titles.
     """
@@ -176,21 +163,6 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, tau=TAU, rng=None,
         ax.plot([0, 1.35 * np.cos(b)], [0, 1.35 * np.sin(b)],
                 ls=":", lw=1.0, c="#bbbbbb", zorder=0)
 
-    # The posterior tau implies, drawn outward from S^1 as one lobe per class:
-    # lobe width is the angular spread tau asserts, and where neighbouring lobes
-    # cross is the band in which the model cannot be confident whatever it learns.
-    post = class_posterior(circ, anchors_rad, tau)
-    lobe = 0.30
-    ax.plot((1 + lobe) * np.cos(circ), (1 + lobe) * np.sin(circ),
-            ls=":", lw=0.8, c="#cccccc", zorder=0)         # p = 1 reference
-    for c in range(3):
-        r = 1 + lobe * post[:, c]
-        ax.fill(np.r_[r * np.cos(circ), np.cos(circ[::-1])],
-                np.r_[r * np.sin(circ), np.sin(circ[::-1])],
-                color=CLASS_COLORS[c], alpha=0.13, lw=0, zorder=1)
-        ax.plot(r * np.cos(circ), r * np.sin(circ), c=CLASS_COLORS[c], lw=1.2,
-                alpha=0.9, zorder=2)
-
     jitter = 1 + 0.045 * rng.standard_normal(len(theta))   # viz only
     for c in range(3):
         m = y == c
@@ -201,10 +173,7 @@ def plot_both_views(u, z, y, theta, anchors_deg=ANCHORS_DEG, tau=TAU, rng=None,
                    edgecolors="k", linewidths=0.9, zorder=5)
     ax.set_aspect("equal"); ax.set_xlim(-1.5, 1.5); ax.set_ylim(-1.5, 1.5)
     ax.set_xticks([]); ax.set_yticks([])
-    p_max = post.max()
-    ax.set_title("(b) after $z = u/\\|u\\|$: same angles, radius discarded\n"
-                 f"lobes = $p(c\\,|\\,\\theta)$ at $\\tau$={tau:g}  "
-                 f"(max $p$ {p_max:.3f}, CE floor {-np.log(p_max):.3f})",
+    ax.set_title("(b) after $z = u/\\|u\\|$: same angles, radius discarded",
                  fontsize=10)
 
     if title:
