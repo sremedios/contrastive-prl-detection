@@ -67,6 +67,10 @@ def parse_args(argv=None):
                    help="skip a fold whose model.pt is already there (resume a sweep)")
     p.add_argument("--keep-going", action="store_true",
                    help="carry on with the remaining folds if one fails")
+    p.add_argument("--summarize", action="store_true",
+                   help="print the table over every results*.json already in "
+                        "--out-dir and exit; how folds run in separate processes "
+                        "are pulled back together")
     p.add_argument("--dry-run", action="store_true",
                    help="print the split and the train.py commands, run nothing")
     p.add_argument("train_args", nargs=argparse.REMAINDER,
@@ -184,6 +188,16 @@ def main(argv=None):
     if clash:
         raise SystemExit(f"{', '.join(clash)}: set per fold by this script; drop it "
                          "from the arguments after `--`")
+    if args.summarize:
+        by_fold = {}
+        for f in sorted(args.out_dir.glob("results*.json")):
+            for r in json.loads(f.read_text()):
+                by_fold[r["fold"]] = r          # a re-run supersedes its earlier row
+        if not by_fold:
+            raise SystemExit(f"no results*.json in {args.out_dir.resolve()}")
+        report([by_fold[k] for k in sorted(by_fold)])
+        return
+
     if args.folds < 2:
         raise SystemExit(f"--folds {args.folds}: need at least 2 folds")
 
@@ -214,6 +228,13 @@ def main(argv=None):
          "data_dir": str(args.data_dir.resolve()),
          "withheld": {str(k): w for k, w in enumerate(folds)}}, indent=2))
 
+    # Named for the folds this invocation runs, so two processes working on
+    # different folds -- one per GPU, say -- never overwrite each other's rows.
+    # `--summarize` reads them back as one table.
+    results_path = args.out_dir / (
+        "results.json" if which == list(range(args.folds))
+        else f"results-fold{'_'.join(str(k) for k in which)}.json")
+
     results = []
     for k in which:
         withheld = folds[k]
@@ -239,7 +260,7 @@ def main(argv=None):
                         **(summary or {})})
         # Rewritten after every fold, so an interrupted sweep still leaves the
         # folds that did finish on disk.
-        (args.out_dir / "results.json").write_text(json.dumps(results, indent=2))
+        results_path.write_text(json.dumps(results, indent=2))
 
         if code != 0:
             print(f"fold {k} failed with exit code {code}")
@@ -248,7 +269,7 @@ def main(argv=None):
                 raise SystemExit(code)
 
     report(results)
-    print(f"\nwrote {(args.out_dir / 'results.json').resolve()}")
+    print(f"\nwrote {results_path.resolve()}")
     if any(r["returncode"] != 0 for r in results):
         raise SystemExit(1)
 
