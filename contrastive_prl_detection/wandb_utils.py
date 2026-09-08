@@ -201,18 +201,32 @@ def embed_probe_patches(probes, model, device, batch=32):
 
 
 def make_probes(pos_root, neg_root, withheld_ids, n_slices=4, tile=64, halo=32,
-                dpi=200, n_patches=64, patch_size=(33, 33, 33)):
-    """Build a probe per cohort root given, for whichever withheld id it holds."""
+                dpi=200, n_patches=64, patch_size=(33, 33, 33), limit=None):
+    """Build probes from each cohort root given, for the withheld ids it holds.
+
+    `limit` caps how many withheld subjects a cohort contributes. Holding out one
+    subject per cohort, as `--withhold-index` does, needs no cap; a
+    cross-validation fold withholds a fifth of the study, and probing all of them
+    would sweep that many whole volumes at every render step.
+
+    The withheld ids are sorted, so the same fold always picks the same subjects
+    and the time-lapse is comparable across runs. A subject that fails to load
+    does not consume the cap -- the next candidate takes its place.
+    """
     probes = []
     for root, is_pos in ((pos_root, True), (neg_root, False)):
         if root is None:
             continue
+        kept = 0
         for subj_id in withheld_ids:
+            if limit is not None and kept >= limit:
+                break
             if not (root / subj_id).is_dir():
                 continue
             try:
                 probes.append(VolumeProbe(root, subj_id, is_pos, n_slices, tile,
                                           halo, dpi, n_patches, patch_size))
+                kept += 1
             except Exception as e:                     # a probe is never worth a crash
                 print(f"skipping volume probe for {subj_id}: {type(e).__name__}: {e}")
     return probes

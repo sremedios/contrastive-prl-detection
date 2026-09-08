@@ -93,6 +93,10 @@ def parse_args(argv=None):
                    help="slices per rendered theta-map")
     g.add_argument("--vol-dpi", type=int, default=200,
                    help="resolution of the rendered theta-map panels")
+    g.add_argument("--vol-subjects", type=int, default=1,
+                   help="withheld subjects probed per cohort (0 = every one). A CV "
+                        "fold withholds a fifth of the study, and every probe "
+                        "sweeps a whole volume at each render")
     g.add_argument("--vol-patches", type=int, default=64,
                    help="patches per class sampled from each withheld volume for "
                         "the separability scatter (0 disables it)")
@@ -277,9 +281,16 @@ def main(argv=None):
         probes = make_probes(args.pos_root, args.neg_root, withheld,
                              n_slices=args.vol_slices, dpi=args.vol_dpi,
                              n_patches=args.vol_patches,
-                             patch_size=(side, side, side))
+                             patch_size=(side, side, side),
+                             limit=args.vol_subjects or None)
+        # A root that holds none of the withheld subjects is a mistyped path, and
+        # it used to cost a whole run to notice: training proceeds happily and the
+        # volume panels simply never appear. Cheaper to stop now.
         if not probes:
-            print("volume probes: (none)")
+            raise SystemExit(
+                f"no withheld subject found under --pos-root/--neg-root "
+                f"({args.pos_root}, {args.neg_root}); check the paths -- the "
+                f"withheld ids are {withheld}")
         for pr in probes:
             counts = {ct.CLASS_NAMES[c]: len(t) for c, t in sorted(pr.patches.items())}
             print(f"volume probe {pr.tag}: {counts}")
