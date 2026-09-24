@@ -10,8 +10,8 @@ that folds landing at 5 deg and 355 deg agree on 0 deg rather than meeting at
 Two volumes come out: the continuous ensemble theta, and its quantisation,
 each voxel labelled by the anchor its ensembled direction is closest to. Both
 are rotated so the neutral class sits at zero -- theta is measured from the
-neutral anchor and wrapped to [-pi, pi), and the labels are 0 neutral,
-1 positive, 2 negative -- so that the background of either volume reads as
+neutral anchor and wrapped to [0, 2pi), and the labels are 0 neutral,
+1 negative, 2 positive -- so that the background of either volume reads as
 neutral. The trained models are untouched; this is relabelling on the way out.
 
 With `--mask`, both volumes are zeroed outside the mask (any nonzero voxel of
@@ -37,8 +37,8 @@ from contrastive_prl_detection.inference import load_model, model_sweep, save_ni
 from contrastive_prl_detection.net import receptive_field_loss
 
 #: Output label for each anchor index (positive, neutral, negative) of `ct`.
-SEG_LABELS = np.array([1, 0, 2], dtype=np.int16)
-SEG_NAMES = ("neutral (~)", "positive (+)", "negative (-)")   # indexed by label
+SEG_LABELS = np.array([2, 0, 1], dtype=np.int16)
+SEG_NAMES = ("neutral (~)", "negative (-)", "positive (+)")   # indexed by label
 
 
 def parse_args(argv=None):
@@ -107,11 +107,12 @@ def main(argv=None):
     # The mean direction, renormalised onto S^1 before it is scored: only its
     # angle is the ensemble's answer, its length is the folds' agreement.
     z = ct.project(z_bar, dim=0)
-    # Measured from the neutral anchor and wrapped to [-pi, pi), so neutral is
-    # 0 and the seam falls between positive and negative, away from neutral.
+    # Measured from the neutral anchor and wrapped to [0, 2pi), so neutral is
+    # 0 and both other classes are > 0. The seam sits on neutral: a voxel just
+    # off it toward positive reads near 2pi, not just below 0.
     neutral = np.radians(anchors_deg[1])
     theta = ct.theta(z, dim=0).cpu().numpy() - neutral
-    theta = (np.remainder(theta + np.pi, 2 * np.pi) - np.pi).astype(np.float32)
+    theta = np.remainder(theta, 2 * np.pi).astype(np.float32)
     logits = ct.logits(z, ct.make_anchors(device, anchors_deg=anchors_deg),
                        tau=tau, dim=0)                            # (3, D, H, W)
     seg = SEG_LABELS[logits.argmax(0).cpu().numpy()]
@@ -125,10 +126,10 @@ def main(argv=None):
     # Stats over the mask when there is one, else over the whole volume.
     keep = np.ones(seg.shape, bool) if mask is None else mask
     counts = np.bincount(seg[keep], minlength=3)
-    anchors_out = [np.degrees(np.angle(np.exp(1j * (np.radians(a) - neutral))))
+    anchors_out = [np.degrees(np.remainder(np.radians(a) - neutral, 2 * np.pi))
                    for a in anchors_deg]
     print("theta anchors after rotation (deg): "
-          + ", ".join(f"{n.split()[0]} {a:+.0f}"
+          + ", ".join(f"{n.split()[0]} {a:.0f}"
                       for n, a in zip(ct.CLASS_NAMES, anchors_out)))
     print(f"theta range: [{theta[keep].min():.4f}, {theta[keep].max():.4f}] rad")
     print(f"mean fold agreement (resultant length): "
